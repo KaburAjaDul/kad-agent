@@ -96,3 +96,25 @@ Initial tables should likely include:
 - Google integrations go through dedicated integration adapters
 - LLM access goes through a provider abstraction
 - service layers own policy, approval, and automation rules
+
+## Worktree Isolation
+
+Worktree isolation is not part of the current implementation.
+
+Current assumption:
+
+- the main agent and its subagents operate in the same checkout
+- orchestration isolation is logical, not Git-worktree-based
+
+Why we are not adding it yet:
+
+- the first milestones focus on product definition, bot skeleton, event workflows, and analytics
+- deterministic workflow and policy correctness matter more right now than parallel branch isolation
+- a worktree layer would add setup, cleanup, and environment-management complexity too early
+
+Criteria to introduce it later:
+
+- multiple bounded build slices need to run in parallel
+- autonomous implementation work starts touching unrelated files concurrently
+- review or QA needs isolated sandboxes per feature branch
+- the cost of shared-worktree contention becomes visible in daily development

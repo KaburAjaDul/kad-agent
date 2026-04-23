@@ -4,7 +4,7 @@
     "openai"
   ],
   "model": "openai/gpt-5.4",
-  "small_model": "openai/gpt-5.4-fast",
+  "small_model": "openai/gpt-5.4",
   "default_agent": "research",
   "instructions": [
     "AGENTS.md",
@@ -162,7 +162,7 @@
       "description": "Focused implementation worker for code, tests, and verification",
       "mode": "subagent",
       "hidden": true,
-      "model": "openai/gpt-5.4-fast",
+      "model": "openai/gpt-5.4",
       "reasoningEffort": "high",
       "textVerbosity": "low",
       "tools": {
