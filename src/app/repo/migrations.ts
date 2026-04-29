@@ -459,6 +459,46 @@ CREATE TABLE IF NOT EXISTS event_hosts (
 );
 `;
 
+const EVENT_SLICE_E2_ASSIGNED_LANGUAGE_CLUBS_SQL = `
+CREATE TABLE IF NOT EXISTS language_clubs (
+  id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  club_key TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  default_host_voice_channel_id TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  configured_by_discord_user_id TEXT NOT NULL,
+  configured_at TEXT NOT NULL,
+  updated_by_discord_user_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (guild_id, club_key)
+);
+
+ALTER TABLE events ADD COLUMN language_club_id TEXT;
+ALTER TABLE events ADD COLUMN language_club_key TEXT;
+ALTER TABLE events ADD COLUMN language_club_display_name TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_language_club_schedule
+  ON events(guild_id, event_type, language_club_id, scheduled_start_at)
+  WHERE language_club_id IS NOT NULL;
+`;
+
+const EVENT_SLICE_E2_REMINDER_DELIVERY_SQL = `
+ALTER TABLE event_reminders ADD COLUMN discord_message_id TEXT;
+
+UPDATE event_reminders
+SET state = CASE state
+  WHEN 'scheduled' THEN 'pending'
+  WHEN 'leased' THEN 'sending'
+  WHEN 'delivered' THEN 'sent'
+  WHEN 'failed' THEN 'send_failed'
+  ELSE state
+END;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_reminders_event_job_key
+  ON event_reminders(event_id, job_key);
+`;
+
 const migrations: Migration[] = [
   {
     id: "0001_foundation",
@@ -475,6 +515,14 @@ const migrations: Migration[] = [
   {
     id: "0004_event_slice_e1_5_host_snapshot",
     sql: EVENT_SLICE_E1_5_SQL
+  },
+  {
+    id: "0005_event_slice_e2_assigned_language_clubs",
+    sql: EVENT_SLICE_E2_ASSIGNED_LANGUAGE_CLUBS_SQL
+  },
+  {
+    id: "0006_event_slice_e2_reminder_delivery",
+    sql: EVENT_SLICE_E2_REMINDER_DELIVERY_SQL
   }
 ];
 

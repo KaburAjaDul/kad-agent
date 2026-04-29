@@ -10,7 +10,7 @@ export function buildReminderJobRecord(input: CreateReminderJobInput): ReminderJ
     reminderType: input.reminderType,
     audienceKind: input.audienceKind,
     scheduledFor: input.scheduledFor,
-    state: "scheduled",
+    state: "pending",
     jobKey: ["event_reminder", input.eventId, input.reminderType, input.audienceKind, input.scheduledFor].join(":"),
     payload: input.payload ?? {},
     createdAt: nowIso,

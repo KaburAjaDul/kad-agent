@@ -10,6 +10,7 @@ type ReminderRow = {
   state: ReminderJobRecord["state"];
   job_key: string;
   payload_json: string;
+  discord_message_id: string | null;
   last_attempted_at: string | null;
   delivered_at: string | null;
   delivery_error: string | null;
@@ -20,7 +21,7 @@ type ReminderRow = {
 export function insertReminderJob(db: SqliteDatabase, reminderJob: ReminderJobRecord): void {
   db.prepare(
     `
-      INSERT INTO event_reminders (
+      INSERT OR IGNORE INTO event_reminders (
         id,
         event_id,
         reminder_type,
@@ -29,12 +30,13 @@ export function insertReminderJob(db: SqliteDatabase, reminderJob: ReminderJobRe
         state,
         job_key,
         payload_json,
+        discord_message_id,
         last_attempted_at,
         delivered_at,
         delivery_error,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
   ).run(
     reminderJob.id,
@@ -45,6 +47,7 @@ export function insertReminderJob(db: SqliteDatabase, reminderJob: ReminderJobRe
     reminderJob.state,
     reminderJob.jobKey,
     JSON.stringify(reminderJob.payload),
+    reminderJob.discordMessageId ?? null,
     reminderJob.lastAttemptedAt ?? null,
     reminderJob.deliveredAt ?? null,
     reminderJob.deliveryError ?? null,
@@ -66,6 +69,7 @@ export function listDuePendingReminderJobs(db: SqliteDatabase, nowIso: string): 
           state,
           job_key,
           payload_json,
+          discord_message_id,
           last_attempted_at,
           delivered_at,
           delivery_error,
@@ -77,9 +81,71 @@ export function listDuePendingReminderJobs(db: SqliteDatabase, nowIso: string): 
         ORDER BY scheduled_for ASC
       `
     )
-    .all("scheduled", nowIso) as ReminderRow[];
+    .all("pending", nowIso) as ReminderRow[];
 
   return rows.map(mapReminderRow);
+}
+
+export function claimReminderJobForSending(db: SqliteDatabase, reminderId: string, nowIso: string): boolean {
+  const result = db
+    .prepare(
+      `
+        UPDATE event_reminders
+        SET state = ?,
+            last_attempted_at = ?,
+            delivery_error = NULL,
+            updated_at = ?
+        WHERE id = ?
+          AND state = ?
+          AND scheduled_for <= ?
+      `
+    )
+    .run("sending", nowIso, nowIso, reminderId, "pending", nowIso) as { changes?: number };
+
+  return Number(result.changes ?? 0) === 1;
+}
+
+export function markReminderJobSent(
+  db: SqliteDatabase,
+  reminderId: string,
+  deliveredAt: string,
+  discordMessageId: string
+): boolean {
+  const result = db
+    .prepare(
+      `
+        UPDATE event_reminders
+        SET state = ?,
+            last_attempted_at = ?,
+            delivered_at = ?,
+            discord_message_id = ?,
+            delivery_error = NULL,
+            updated_at = ?
+        WHERE id = ?
+          AND state = ?
+      `
+    )
+    .run("sent", deliveredAt, deliveredAt, discordMessageId, deliveredAt, reminderId, "sending") as { changes?: number };
+
+  return Number(result.changes ?? 0) === 1;
+}
+
+export function markReminderJobSendFailed(db: SqliteDatabase, reminderId: string, attemptedAt: string, deliveryError: string): boolean {
+  const result = db
+    .prepare(
+      `
+        UPDATE event_reminders
+        SET state = ?,
+            last_attempted_at = ?,
+            delivery_error = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND state = ?
+      `
+    )
+    .run("send_failed", attemptedAt, deliveryError, attemptedAt, reminderId, "sending") as { changes?: number };
+
+  return Number(result.changes ?? 0) === 1;
 }
 
 function mapReminderRow(row: ReminderRow): ReminderJobRecord {
@@ -92,6 +158,7 @@ function mapReminderRow(row: ReminderRow): ReminderJobRecord {
     state: row.state,
     jobKey: row.job_key,
     payload: JSON.parse(row.payload_json) as ReminderJobRecord["payload"],
+    discordMessageId: row.discord_message_id ?? undefined,
     lastAttemptedAt: row.last_attempted_at ?? undefined,
     deliveredAt: row.delivered_at ?? undefined,
     deliveryError: row.delivery_error ?? undefined,

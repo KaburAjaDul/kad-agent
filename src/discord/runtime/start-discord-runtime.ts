@@ -20,8 +20,13 @@ import {
   type ConfigureLanguageClubGuildInput
 } from "../../events/service/language-club-guild-config-service.js";
 import { getLanguageClubGuildConfigByGuildId } from "../../events/repo/language-club-guild-config-repo.js";
+import {
+  listLanguageClubsByGuildId,
+  upsertLanguageClubCommand
+} from "../../events/service/language-club-registry-service.js";
 
 export type DiscordRuntime = {
+  publishReminder: (input: { channelId: string; content: string }) => Promise<{ messageId: string }>;
   destroy: () => Promise<void>;
 };
 
@@ -105,12 +110,33 @@ export async function startDiscordRuntime(
 
     if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "e1-show") {
       await handleShowE1Setup(interaction, db);
+      return;
+    }
+
+    if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "language-club-upsert") {
+      await handleLanguageClubUpsert(interaction, db);
+      return;
+    }
+
+    if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "language-club-list") {
+      await handleLanguageClubList(interaction, db);
     }
   });
 
   await client.login(appConfig.discord.botToken);
 
   return {
+    publishReminder: async ({ channelId, content }) => {
+      const channel = await client.channels.fetch(channelId);
+
+      if (!channel || channel.type === ChannelType.DM || !("send" in channel)) {
+        throw new Error("Configured reminder channel is not a sendable in-server Discord channel.");
+      }
+
+      const message = await channel.send({ content });
+
+      return { messageId: message.id };
+    },
     destroy: async () => {
       client.destroy();
     }
@@ -156,6 +182,7 @@ async function handleCreateLanguageClub(
       actorDiscordUserId: interaction.user.id,
       actorRoleIds: getInteractionRoleIds(interaction),
       sourceInteractionId: interaction.id,
+      clubKey: interaction.options.getString("club_key", true),
       date: interaction.options.getString("date", true),
       time: interaction.options.getString("time", true),
       hostVoiceChannelId: hostVoiceChannel?.id ?? null,
@@ -275,6 +302,89 @@ async function handleShowE1Setup(interaction: ChatInputCommandInteraction, db: S
   }
 
   await replyEphemeral(interaction, formatE1ConfigSummary(storedConfig, "Konfigurasi Event Slice E1 ditemukan."));
+}
+
+async function handleLanguageClubUpsert(interaction: ChatInputCommandInteraction, db: SqliteDatabase): Promise<void> {
+  const guildId = interaction.guildId;
+
+  if (!guildId) {
+    await replyEphemeral(interaction, "Perintah setup ini hanya bisa dipakai di dalam server Discord.");
+    return;
+  }
+
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    await replyEphemeral(interaction, "Kamu harus punya izin Administrator untuk mengubah registry Language Club.");
+    return;
+  }
+
+  const defaultHostVoiceChannel = interaction.options.getChannel("default_host_voice_channel", false, [
+    ChannelType.GuildVoice,
+    ChannelType.GuildStageVoice
+  ]);
+
+  if (defaultHostVoiceChannel && defaultHostVoiceChannel.guildId !== guildId) {
+    await replyEphemeral(interaction, "Default host voice channel harus berupa voice/stage channel di guild ini.");
+    return;
+  }
+
+  try {
+    const club = upsertLanguageClubCommand(db, {
+      guildId,
+      clubKey: interaction.options.getString("club_key", true),
+      displayName: interaction.options.getString("display_name", true),
+      defaultHostVoiceChannelId: defaultHostVoiceChannel?.id ?? null,
+      active: interaction.options.getBoolean("active", false) ?? true,
+      actorDiscordUserId: interaction.user.id
+    });
+
+    await replyEphemeral(
+      interaction,
+      [
+        "Language Club registry tersimpan.",
+        `club_key: ${club.clubKey}`,
+        `display_name: ${club.displayName}`,
+        `default_host_voice_channel: ${club.defaultHostVoiceChannelId ? `<#${club.defaultHostVoiceChannelId}>` : "-"}`,
+        `active: ${club.isActive ? "yes" : "no"}`
+      ].join("\n")
+    );
+  } catch (error) {
+    await replyEphemeral(interaction, `Language Club registry ditolak: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+}
+
+async function handleLanguageClubList(interaction: ChatInputCommandInteraction, db: SqliteDatabase): Promise<void> {
+  const guildId = interaction.guildId;
+
+  if (!guildId) {
+    await replyEphemeral(interaction, "Perintah setup ini hanya bisa dipakai di dalam server Discord.");
+    return;
+  }
+
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    await replyEphemeral(interaction, "Kamu harus punya izin Administrator untuk melihat registry Language Club.");
+    return;
+  }
+
+  const clubs = listLanguageClubsByGuildId(db, guildId);
+
+  if (clubs.length === 0) {
+    await replyEphemeral(interaction, "Belum ada assigned Language Club yang dikonfigurasi.");
+    return;
+  }
+
+  await replyEphemeral(
+    interaction,
+    clubs
+      .map((club) =>
+        [
+          `${club.clubKey} — ${club.displayName}`,
+          `active=${club.isActive ? "yes" : "no"}`,
+          `default_host_voice_channel=${club.defaultHostVoiceChannelId ? `<#${club.defaultHostVoiceChannelId}>` : "-"}`,
+          `updated=${club.updatedAt}`
+        ].join(" | ")
+      )
+      .join("\n")
+  );
 }
 
 function formatE1ConfigSummary(

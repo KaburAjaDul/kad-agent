@@ -14,6 +14,9 @@ export const foundationCommands = [
         .setName("create-language-club")
         .setDescription("Buat Language Club seeded, native Discord event, dan announcement dengan pilihan channel dan host.")
         .addStringOption((option) =>
+          option.setName("club_key").setDescription("Slug club yang sudah dikonfigurasi, misalnya english_club.").setRequired(true)
+        )
+        .addStringOption((option) =>
           option.setName("date").setDescription("Tanggal event dengan format YYYY-MM-DD.").setRequired(true)
         )
         .addStringOption((option) =>
@@ -76,6 +79,28 @@ export const foundationCommands = [
     )
     .addSubcommand((subcommand) =>
       subcommand.setName("e1-show").setDescription("Tampilkan konfigurasi guild Event Slice E1 dari SQLite.")
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("language-club-upsert")
+        .setDescription("Tambah atau ubah registry assigned Language Club.")
+        .addStringOption((option) =>
+          option.setName("club_key").setDescription("Safe slug unik untuk club ini.").setRequired(true)
+        )
+        .addStringOption((option) =>
+          option.setName("display_name").setDescription("Nama tampil club untuk announcement dan reminder.").setRequired(true)
+        )
+        .addChannelOption((option) =>
+          option
+            .setName("default_host_voice_channel")
+            .setDescription("Default voice/stage channel untuk club ini.")
+            .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
+            .setRequired(false)
+        )
+        .addBooleanOption((option) => option.setName("active").setDescription("Apakah club aktif. Default: true."))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("language-club-list").setDescription("Tampilkan registry assigned Language Club guild ini.")
     )
     .toJSON()
 ];

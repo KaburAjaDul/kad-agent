@@ -43,6 +43,10 @@ describe("foundation database", () => {
         name: string;
         notnull: number;
       }>;
+      const reminderColumns = db.prepare("PRAGMA table_info(event_reminders)").all() as Array<{
+        name: string;
+        notnull: number;
+      }>;
       const templateColumns = db.prepare("PRAGMA table_info(event_templates)").all() as Array<{
         name: string;
         notnull: number;
@@ -92,7 +96,9 @@ describe("foundation database", () => {
         "0001_foundation",
         "0002_event_slice_e1",
         "0003_event_slice_e1_setup_config",
-        "0004_event_slice_e1_5_host_snapshot"
+        "0004_event_slice_e1_5_host_snapshot",
+        "0005_event_slice_e2_assigned_language_clubs",
+        "0006_event_slice_e2_reminder_delivery"
       ]);
       expect(insertedSeedRows).toBe(1);
       expect(tableNames).toEqual(
@@ -107,6 +113,7 @@ describe("foundation database", () => {
           "events",
           "job_runs",
           "language_club_guild_config",
+          "language_clubs",
           "language_club_staff_roles",
           "schema_migrations"
         ])
@@ -119,7 +126,10 @@ describe("foundation database", () => {
           expect.objectContaining({ name: "template_id", notnull: 1 }),
           expect.objectContaining({ name: "template_key", notnull: 1 }),
           expect.objectContaining({ name: "template_version", notnull: 1 }),
-          expect.objectContaining({ name: "scheduling_scope_key", notnull: 1 })
+          expect.objectContaining({ name: "scheduling_scope_key", notnull: 1 }),
+          expect.objectContaining({ name: "language_club_id", notnull: 0 }),
+          expect.objectContaining({ name: "language_club_key", notnull: 0 }),
+          expect.objectContaining({ name: "language_club_display_name", notnull: 0 })
         ])
       );
       expect(templateColumns).toEqual(
@@ -137,6 +147,13 @@ describe("foundation database", () => {
           expect.objectContaining({ name: "display_order", notnull: 1 }),
           expect.objectContaining({ name: "assigned_by_discord_user_id", notnull: 1 }),
           expect.objectContaining({ name: "assigned_at", notnull: 1 })
+        ])
+      );
+      expect(reminderColumns).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "state", notnull: 1 }),
+          expect.objectContaining({ name: "job_key", notnull: 1 }),
+          expect.objectContaining({ name: "discord_message_id", notnull: 0 })
         ])
       );
       expect(templateUniqueIndexes).toContainEqual(["template_key", "template_version"]);

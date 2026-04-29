@@ -18,6 +18,9 @@ export type StoredLanguageClubEvent = {
   guildId: string;
   announcementChannelId: string;
   hostVoiceChannelId: string | null;
+  languageClubId: string | null;
+  languageClubKey: string | null;
+  languageClubDisplayName: string | null;
   templateId: string;
   templateKey: string;
   templateVersion: number;
@@ -131,6 +134,9 @@ export function findLanguageClubEventBySchedule(
           guild_id,
           announcement_channel_id,
           host_voice_channel_id,
+          language_club_id,
+          language_club_key,
+          language_club_display_name,
           template_id,
           template_key,
           template_version,
@@ -165,6 +171,57 @@ export function findLanguageClubEventBySchedule(
   return row ? mapEventRow(row) : null;
 }
 
+export function findLanguageClubEventByClubSchedule(
+  db: SqliteDatabase,
+  guildId: string,
+  languageClubId: string,
+  scheduledStartAt: string
+): StoredLanguageClubEvent | null {
+  const row = db
+    .prepare(
+      `
+        SELECT
+          id,
+          guild_id,
+          announcement_channel_id,
+          host_voice_channel_id,
+          language_club_id,
+          language_club_key,
+          language_club_display_name,
+          template_id,
+          template_key,
+          template_version,
+          event_type,
+          approval_class,
+          classification,
+          scheduling_scope_key,
+          state,
+          title,
+          description,
+          timezone,
+          scheduled_start_at,
+          scheduled_end_at,
+          created_by_discord_user_id,
+          source_interaction_id,
+          drafted_at,
+          published_at,
+          publish_failed_at,
+          publish_error,
+          discord_announcement_message_id,
+          discord_scheduled_event_id,
+          google_calendar_event_id
+        FROM events
+        WHERE guild_id = ?
+          AND event_type = ?
+          AND language_club_id = ?
+          AND scheduled_start_at = ?
+      `
+    )
+    .get(guildId, "language_club", languageClubId, scheduledStartAt) as EventRow | undefined;
+
+  return row ? mapEventRow(row) : null;
+}
+
 export function getLanguageClubEventById(db: SqliteDatabase, eventId: string): StoredLanguageClubEvent | null {
   const row = db
     .prepare(
@@ -174,6 +231,9 @@ export function getLanguageClubEventById(db: SqliteDatabase, eventId: string): S
           guild_id,
           announcement_channel_id,
           host_voice_channel_id,
+          language_club_id,
+          language_club_key,
+          language_club_display_name,
           template_id,
           template_key,
           template_version,
@@ -237,6 +297,9 @@ export function createDraftedLanguageClubEvent(
           updated_at,
           announcement_channel_id,
           host_voice_channel_id,
+          language_club_id,
+          language_club_key,
+          language_club_display_name,
           template_version,
           scheduling_scope_key,
           timezone,
@@ -247,7 +310,7 @@ export function createDraftedLanguageClubEvent(
           discord_announcement_message_id,
           discord_scheduled_event_id,
           google_calendar_event_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
     ).run(
       event.id,
@@ -270,6 +333,9 @@ export function createDraftedLanguageClubEvent(
       event.draftedAt,
       event.announcementChannelId,
       event.hostVoiceChannelId,
+      event.languageClubId,
+      event.languageClubKey,
+      event.languageClubDisplayName,
       event.templateVersion,
       event.schedulingScopeKey,
       event.timezone,
@@ -490,6 +556,9 @@ type EventRow = {
   guild_id: string;
   announcement_channel_id: string;
   host_voice_channel_id: string | null;
+  language_club_id: string | null;
+  language_club_key: string | null;
+  language_club_display_name: string | null;
   template_id: string;
   template_key: string;
   template_version: number;
@@ -539,6 +608,9 @@ function mapEventRow(row: EventRow): StoredLanguageClubEvent {
     guildId: row.guild_id,
     announcementChannelId: row.announcement_channel_id,
     hostVoiceChannelId: row.host_voice_channel_id,
+    languageClubId: row.language_club_id,
+    languageClubKey: row.language_club_key,
+    languageClubDisplayName: row.language_club_display_name,
     templateId: row.template_id,
     templateKey: row.template_key,
     templateVersion: Number(row.template_version),

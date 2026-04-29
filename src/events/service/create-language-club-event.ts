@@ -1,8 +1,11 @@
 import { createUuidV7 } from "../../app/lib/uuidv7.js";
 import type { SqliteDatabase } from "../../app/repo/sqlite.js";
 import { getLanguageClubGuildConfigByGuildId } from "../repo/language-club-guild-config-repo.js";
+import { getLanguageClubByKey } from "../repo/language-club-registry-repo.js";
+import { insertReminderJob } from "../repo/event-reminder-repo.js";
 import {
   createDraftedLanguageClubEvent,
+  findLanguageClubEventByClubSchedule,
   findLanguageClubEventBySchedule,
   findSupportedLanguageClubTemplate,
   getLanguageClubEventById,
@@ -10,6 +13,7 @@ import {
   markLanguageClubEventPublished,
   storeLanguageClubEventDiscordScheduledEventId
 } from "../repo/language-club-event-repo.js";
+import { buildReminderJobRecord } from "./reminder-job-factory.js";
 
 const SUPPORTED_TEMPLATE_KEY = "language_club_default";
 const SUPPORTED_TEMPLATE_VERSION = 1;
@@ -23,6 +27,7 @@ export type CreateLanguageClubEventInput = {
   actorDiscordUserId: string;
   actorRoleIds: string[];
   sourceInteractionId: string;
+  clubKey: string;
   date: string;
   time: string;
   hostVoiceChannelId?: string | null;
@@ -91,6 +96,13 @@ export async function createLanguageClubEvent(
     return hardRejected("Template seeded language_club_default@v1 belum tersedia di SQLite.");
   }
 
+  const normalizedClubKey = normalizeClubKey(input.clubKey);
+  const languageClub = getLanguageClubByKey(deps.db, publishConfig.guildId, normalizedClubKey);
+
+  if (!languageClub || !languageClub.isActive) {
+    return hardRejected("club_key belum dikonfigurasi aktif. Jalankan /setup language-club-upsert terlebih dahulu.");
+  }
+
   if (
     template.templateKey !== SUPPORTED_TEMPLATE_KEY ||
     template.templateVersion !== SUPPORTED_TEMPLATE_VERSION ||
@@ -107,7 +119,10 @@ export async function createLanguageClubEvent(
     return hardRejected(schedule.reason);
   }
 
-  const resolvedHostVoiceChannelId = normalizeOptionalDiscordId(input.hostVoiceChannelId) ?? publishConfig.hostVoiceChannelId;
+  const resolvedHostVoiceChannelId =
+    normalizeOptionalDiscordId(input.hostVoiceChannelId) ??
+    languageClub.defaultHostVoiceChannelId ??
+    publishConfig.hostVoiceChannelId;
 
   if (!resolvedHostVoiceChannelId) {
     return hardRejected("Guild ini belum punya host voice channel default yang valid untuk Language Club.");
@@ -127,7 +142,18 @@ export async function createLanguageClubEvent(
   );
 
   if (duplicateEvent) {
-    return hardRejected("Sudah ada event Language Club untuk jadwal mulai yang sama.");
+    return hardRejected("Sudah ada event Language Club untuk host channel dan jadwal mulai yang sama.");
+  }
+
+  const duplicateClubEvent = findLanguageClubEventByClubSchedule(
+    deps.db,
+    publishConfig.guildId,
+    languageClub.id,
+    schedule.scheduledStartAt
+  );
+
+  if (duplicateClubEvent) {
+    return hardRejected("Sudah ada event Language Club untuk club_key dan jadwal mulai yang sama.");
   }
 
   const baseNow = deps.now ?? new Date();
@@ -144,6 +170,9 @@ export async function createLanguageClubEvent(
         guildId: publishConfig.guildId,
         announcementChannelId: publishConfig.announcementChannelId,
         hostVoiceChannelId: resolvedHostVoiceChannelId,
+        languageClubId: languageClub.id,
+        languageClubKey: languageClub.clubKey,
+        languageClubDisplayName: languageClub.displayName,
         templateId: template.id,
         templateKey: template.templateKey,
         templateVersion: template.templateVersion,
@@ -187,7 +216,7 @@ export async function createLanguageClubEvent(
     );
   } catch (error) {
     if (isUniqueConstraintError(error)) {
-      return hardRejected("Sudah ada event Language Club untuk jadwal mulai yang sama.");
+      return hardRejected("Sudah ada event Language Club untuk club/channel dan jadwal mulai yang sama.");
     }
 
     throw error;
@@ -235,6 +264,7 @@ export async function createLanguageClubEvent(
     const publishResult = await deps.publisher.publishAnnouncement({
       channelId: draftedEvent.announcementChannelId,
       content: buildAnnouncementMessage({
+        languageClubDisplayName: draftedEvent.languageClubDisplayName ?? languageClub.displayName,
         scheduledStartAt: draftedEvent.scheduledStartAt,
         timeZone: draftedEvent.timezone,
         hostVoiceChannelId: draftedEvent.hostVoiceChannelId,
@@ -253,6 +283,19 @@ export async function createLanguageClubEvent(
       occurredAt: publishedAt,
       reason: "language_club_seeded_publish_success"
     });
+
+    try {
+      createFutureReminderRows(deps.db, {
+        eventId,
+        announcementChannelId: draftedEvent.announcementChannelId,
+        languageClubDisplayName: draftedEvent.languageClubDisplayName ?? languageClub.displayName,
+        scheduledStartAt: draftedEvent.scheduledStartAt,
+        hostVoiceChannelId: draftedEvent.hostVoiceChannelId,
+        now: publishedAtDate
+      });
+    } catch (reminderSchedulingError) {
+      console.error("Language Club event published but reminder scheduling failed", reminderSchedulingError);
+    }
 
     return {
       status: "published",
@@ -293,6 +336,10 @@ function hardRejected(reason: string): CreateLanguageClubEventResult {
   };
 }
 
+function normalizeClubKey(clubKey: string): string {
+  return clubKey.trim().toLowerCase();
+}
+
 function isAuthorizedStaffActor(actorRoleIds: string[], allowedRoleIds: string[]): boolean {
   return actorRoleIds.some((roleId) => allowedRoleIds.includes(roleId));
 }
@@ -304,6 +351,7 @@ function renderTemplate(template: string, labels: Record<string, string>): strin
 }
 
 function buildAnnouncementMessage(input: {
+  languageClubDisplayName: string;
   scheduledStartAt: string;
   timeZone: string;
   hostVoiceChannelId: string;
@@ -324,7 +372,7 @@ function buildAnnouncementMessage(input: {
   return [
     "Halo teman-teman KAD! ✨",
     "",
-    `Language Club kita buka lagi pada ${scheduleLabel} (${input.timeZone}).`,
+    `${input.languageClubDisplayName} kita buka lagi pada ${scheduleLabel} (${input.timeZone}).`,
     `Yuk gabung santai, ngobrol bareng, dan latihan langsung di voice channel <#${input.hostVoiceChannelId}>.`,
     "Native Discord event-nya juga sudah aktif di server ini ✨",
     input.hostDiscordUserIds.length > 0 ? `Host sesi ini: ${input.hostDiscordUserIds.map((userId) => `<@${userId}>`).join(", ")}.` : null,
@@ -332,6 +380,49 @@ function buildAnnouncementMessage(input: {
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
+}
+
+function createFutureReminderRows(
+  db: SqliteDatabase,
+  input: {
+    eventId: string;
+    announcementChannelId: string;
+    languageClubDisplayName: string;
+    scheduledStartAt: string;
+    hostVoiceChannelId: string;
+    now: Date;
+  }
+): void {
+  const scheduledStartMs = new Date(input.scheduledStartAt).getTime();
+  const reminderSpecs = [
+    { reminderType: "t_minus_24h" as const, offsetMs: 24 * 60 * 60 * 1000 },
+    { reminderType: "t_minus_1h" as const, offsetMs: 60 * 60 * 1000 }
+  ];
+
+  for (const spec of reminderSpecs) {
+    const sendAt = new Date(scheduledStartMs - spec.offsetMs);
+
+    if (sendAt.getTime() <= input.now.getTime()) {
+      continue;
+    }
+
+    insertReminderJob(
+      db,
+      buildReminderJobRecord({
+        eventId: input.eventId,
+        reminderType: spec.reminderType,
+        audienceKind: "attendee",
+        scheduledFor: sendAt.toISOString(),
+        payload: {
+          targetChannelId: input.announcementChannelId,
+          languageClubDisplayName: input.languageClubDisplayName,
+          scheduledStartAt: input.scheduledStartAt,
+          hostVoiceChannelId: input.hostVoiceChannelId
+        },
+        now: input.now
+      })
+    );
+  }
 }
 
 function buildSchedulingScopeKey(hostVoiceChannelId: string): string {

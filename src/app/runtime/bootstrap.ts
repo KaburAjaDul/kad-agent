@@ -33,9 +33,22 @@ export async function startApplication(appConfig: AppConfig = loadAppConfig()): 
     }
 
     const discordRuntime = await startDiscordRuntime(appConfig, db);
+    let reminderSweepInFlight = false;
 
     const intervalHandle = setInterval(() => {
-      jobRunner.runReminderSweep();
+      if (reminderSweepInFlight) {
+        return;
+      }
+
+      reminderSweepInFlight = true;
+      void jobRunner
+        .deliverReminderSweep(discordRuntime)
+        .catch((error: unknown) => {
+          console.error("Reminder delivery sweep failed", error);
+        })
+        .finally(() => {
+          reminderSweepInFlight = false;
+        });
     }, appConfig.jobPollIntervalMs);
 
     const shutdown = async () => {

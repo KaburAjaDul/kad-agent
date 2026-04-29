@@ -4,7 +4,7 @@ Recommended execution order:
 
 1. `milestone-0-foundation-and-bot-skeleton.md` — bootstrap the Discord runtime, SQLite foundation, and job runner skeleton.
 2. `post-m0-seeded-language-club-publish-slice.md` — deliver the first routine event create-and-publish path with durable event policy fields.
-3. `post-m0-language-club-reminders-slice.md` — add reminder scheduling and deterministic reminder delivery for published Language Club events.
+3. `post-e2-language-club-assigned-reminders-slice.md` — add explicit Language Club assignment plus club-aware reminder scheduling and delivery.
 4. `post-m0-language-club-attendance-closeout-slice.md` — add conservative aggregate attendance closeout for published Language Club events.
 5. `post-m0-discord-voice-session-capture-slice.md` — make voice analytics feasible with live allowlisted session capture and daily voice aggregates.
 6. `post-m0-discord-activity-daily-snapshots-slice.md` — add on-demand text-only daily snapshots for allowlisted text channels.

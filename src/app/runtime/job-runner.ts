@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { SqliteDatabase } from "../repo/sqlite.js";
 import { listDuePendingReminderJobs } from "../../events/repo/event-reminder-repo.js";
+import {
+  deliverDueEventReminders,
+  type ReminderDiscordPublisher,
+  type ReminderDeliverySweepResult
+} from "../../events/service/reminder-delivery-service.js";
 
 export type ReminderSweepResult = {
   discoveredDueReminders: number;
@@ -45,5 +50,39 @@ export class BackgroundJobRunner {
       discoveredDueReminders: dueReminders.length,
       jobRunId
     };
+  }
+
+  async deliverReminderSweep(publisher: ReminderDiscordPublisher, now: Date = new Date()): Promise<ReminderDeliverySweepResult> {
+    const nowIso = now.toISOString();
+    const result = await deliverDueEventReminders(this.db, publisher, now);
+    const jobRunId = randomUUID();
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO job_runs (
+            id,
+            job_name,
+            job_key,
+            state,
+            started_at,
+            finished_at,
+            result_summary,
+            error_message
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `
+      )
+      .run(
+        jobRunId,
+        "reminder_delivery_sweep",
+        `reminder_delivery_sweep:${nowIso}`,
+        result.failed > 0 ? "completed_with_failures" : "completed",
+        nowIso,
+        nowIso,
+        `due_reminders=${result.discoveredDueReminders};delivered=${result.delivered};failed=${result.failed}`,
+        null
+      );
+
+    return result;
   }
 }
