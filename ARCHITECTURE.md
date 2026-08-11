@@ -64,3 +64,16 @@ Rules:
 - large events: require approval before publication
 - public guidance: only from approved knowledge docs
 - public social output: queue first, human approval before publishing
+
+## Worktree Strategy
+
+Git worktree isolation is not implemented yet.
+
+For now, all agent and subagent work happens in the same repository checkout.
+
+We should introduce worktree isolation later only when:
+
+1. multiple implementation slices need to run in parallel
+2. isolated experimental branches would reduce merge risk
+3. review sandboxes are needed for larger autonomous changes
+4. concurrent background implementation work becomes common enough to justify the added complexity

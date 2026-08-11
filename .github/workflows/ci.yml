@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build production output
+        run: npm run build
+
+      - name: Run application dry-run smoke
+        run: npm run start:dry-run
+        env:
+          BOT_DRY_RUN: "true"
+          DATABASE_PATH: ${{ runner.temp }}/kad-agent.sqlite
+
+      - name: Build runtime container
+        run: docker build --tag kad-agent:ci .
+
+      - name: Smoke runtime container as non-root
+        run: |
+          test "$(docker image inspect kad-agent:ci --format '{{.Config.User}}')" = "kad-agent"
+          docker image inspect kad-agent:ci --format '{{json .Config.Healthcheck.Test}}' | grep -F '/readyz'
+          docker run --rm --init --env BOT_DRY_RUN=true --tmpfs /data:uid=10001,gid=10001 kad-agent:ci --dry-run
