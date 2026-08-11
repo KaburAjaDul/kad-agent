@@ -18,7 +18,9 @@
     "migrate": "tsx src/scripts/migrate.ts",
     "seed": "tsx src/scripts/seed.ts",
     "db:init": "npm run migrate && npm run seed",
-    "register-commands": "tsx src/scripts/register-commands.ts"
+    "register-commands": "tsx src/scripts/register-commands.ts",
+    "sync:staging": "tsx src/scripts/sync-public-agenda.ts",
+    "sync:staging:dry-run": "tsx src/scripts/sync-public-agenda.ts --dry-run"
   },
   "dependencies": {
     "discord.js": "^14.27.0",
