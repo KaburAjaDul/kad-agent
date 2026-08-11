@@ -51,6 +51,38 @@ describe("loadAppConfig", () => {
     ).toThrow("DISCORD_APP_ID is required when BOT_DRY_RUN is false.");
   });
 
+  it("parses and deduplicates the non-secret Discord guild allowlist", () => {
+    const config = loadAppConfig({
+      env: {
+        NODE_ENV: "test",
+        BOT_DRY_RUN: "false",
+        DATABASE_PATH: "./tmp/test.sqlite",
+        DISCORD_APP_ID: "123456789012345678",
+        DISCORD_BOT_TOKEN: "test-token",
+        DISCORD_ALLOWED_GUILD_IDS: " 123456789012345678,987654321098765432,123456789012345678 "
+      },
+      cwd: "/repo",
+      loadEnvFile: false
+    });
+
+    expect(config.discord.allowedGuildIds).toEqual(["123456789012345678", "987654321098765432"]);
+  });
+
+  it("requires a non-empty guild allowlist for live startup", () => {
+    expect(() =>
+      loadAppConfig({
+        env: {
+          NODE_ENV: "test",
+          BOT_DRY_RUN: "false",
+          DATABASE_PATH: "./tmp/test.sqlite",
+          DISCORD_APP_ID: "123456789012345678",
+          DISCORD_BOT_TOKEN: "test-token"
+        },
+        loadEnvFile: false
+      })
+    ).toThrow("DISCORD_ALLOWED_GUILD_IDS is required");
+  });
+
   it("no longer requires env-backed Event Slice E1 guild setup values", () => {
     const config = loadAppConfig({
       env: {
@@ -65,7 +97,8 @@ describe("loadAppConfig", () => {
     expect(config.databasePath).toBe("/repo/tmp/test.sqlite");
     expect(config.discord).toEqual({
       appId: undefined,
-      botToken: undefined
+      botToken: undefined,
+      allowedGuildIds: []
     });
   });
 });

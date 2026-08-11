@@ -1,4 +1,5 @@
 import type { SqliteDatabase } from "../../app/repo/sqlite.js";
+import { toSafeOperationalErrorMessage } from "../../app/lib/operational-logger.js";
 import {
   claimReminderJobForSending,
   listDuePendingReminderJobs,
@@ -80,5 +81,7 @@ export function buildReminderMessage(reminder: ReminderJobRecord): string {
 }
 
 function formatErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unknown reminder delivery error.";
+  return toSafeOperationalErrorMessage(error, "Unknown reminder delivery error.").slice(0, MAX_PROVIDER_ERROR_LENGTH);
 }
+
+const MAX_PROVIDER_ERROR_LENGTH = 500;

@@ -13,7 +13,13 @@ import {
   type User
 } from "discord.js";
 import type { AppConfig } from "../../app/config/env.js";
+import {
+  createOperationalLogger,
+  toSafeOperationalErrorMessage,
+  type OperationalLogger
+} from "../../app/lib/operational-logger.js";
 import type { SqliteDatabase } from "../../app/repo/sqlite.js";
+import { isAllowedGuildId } from "./register-commands.js";
 import { createLanguageClubEvent } from "../../events/service/create-language-club-event.js";
 import {
   configureLanguageClubGuild,
@@ -34,8 +40,14 @@ export async function startDiscordRuntime(
   appConfig: AppConfig,
   db: SqliteDatabase
 ): Promise<DiscordRuntime> {
+  const logger = createOperationalLogger({ level: appConfig.logLevel });
+
   if (!appConfig.discord.botToken) {
     throw new Error("DISCORD_BOT_TOKEN is required to start the Discord runtime.");
+  }
+
+  if (appConfig.discord.allowedGuildIds.length === 0) {
+    throw new Error("DISCORD_ALLOWED_GUILD_IDS is required to start the Discord runtime.");
   }
 
   const client = new Client({
@@ -43,7 +55,11 @@ export async function startDiscordRuntime(
   });
 
   client.once(Events.ClientReady, (readyClient) => {
-    console.info(`Discord runtime ready as ${readyClient.user.tag}`);
+    logger.info("discord_runtime_ready", { guildCount: readyClient.guilds.cache.size });
+  });
+
+  client.on(Events.Error, (error) => {
+    logger.error("discord_client_error", { error });
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
@@ -51,75 +67,97 @@ export async function startDiscordRuntime(
       return;
     }
 
-    if (interaction.commandName === "ping") {
-      await interaction.reply({
-        content: "KAD-Agent foundation is online. Seeded Language Club publish is ready.",
-        ephemeral: true
+    if (!isAllowedGuildId(interaction.guildId, appConfig.discord.allowedGuildIds)) {
+      try {
+        await rejectInteraction(interaction);
+      } catch (error) {
+        logger.warn("discord_disallowed_interaction_rejected", { error });
+      }
+      return;
+    }
+
+    try {
+      if (interaction.commandName === "ping") {
+        await interaction.reply({
+          content: "KAD-Agent foundation is online. Seeded Language Club publish is ready.",
+          ephemeral: true,
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+
+      if (interaction.commandName === "event" && interaction.options.getSubcommand() === "create-language-club") {
+        await handleCreateLanguageClub(interaction, db, {
+          createScheduledEvent: async ({ guildId, channelId, title, description, scheduledStartAt, scheduledEndAt }) => {
+            const guild = await client.guilds.fetch(guildId);
+            const channel = await client.channels.fetch(channelId);
+
+            if (!channel || (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildStageVoice)) {
+              throw new Error("Configured host channel must be a voice or stage channel for Discord Scheduled Event creation.");
+            }
+
+            if (channel.guildId !== guildId) {
+              throw new Error("Configured host voice channel is not a valid in-server Discord channel.");
+            }
+
+            const scheduledEvent = await guild.scheduledEvents.create({
+              name: title,
+              description,
+              scheduledStartTime: scheduledStartAt,
+              scheduledEndTime: scheduledEndAt,
+              privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
+              entityType:
+                channel.type === ChannelType.GuildStageVoice
+                  ? GuildScheduledEventEntityType.StageInstance
+                  : GuildScheduledEventEntityType.Voice,
+              channel
+            });
+
+            return { scheduledEventId: scheduledEvent.id };
+          },
+          publishAnnouncement: async ({ channelId, content, allowedUserIds }) => {
+            const channel = await client.channels.fetch(channelId);
+
+            if (!channel || channel.type === ChannelType.DM || !("send" in channel)) {
+              throw new Error("Configured announcement channel is not a sendable in-server Discord channel.");
+            }
+
+            const message = await channel.send({
+              content,
+              allowedMentions: buildAllowedMentions(content, allowedUserIds)
+            });
+
+            return { messageId: message.id };
+          }
+        });
+        return;
+      }
+
+      if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "e1-configure") {
+        await handleConfigureE1Setup(interaction, db);
+        return;
+      }
+
+      if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "e1-show") {
+        await handleShowE1Setup(interaction, db);
+        return;
+      }
+
+      if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "language-club-upsert") {
+        await handleLanguageClubUpsert(interaction, db);
+        return;
+      }
+
+      if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "language-club-list") {
+        await handleLanguageClubList(interaction, db);
+      }
+    } catch (error) {
+      logger.error("discord_interaction_failed", {
+        commandName: interaction.commandName,
+        guildId: interaction.guildId,
+        error
       });
-      return;
-    }
-
-    if (interaction.commandName === "event" && interaction.options.getSubcommand() === "create-language-club") {
-      await handleCreateLanguageClub(interaction, db, {
-        createScheduledEvent: async ({ guildId, channelId, title, description, scheduledStartAt, scheduledEndAt }) => {
-          const guild = await client.guilds.fetch(guildId);
-          const channel = await client.channels.fetch(channelId);
-
-          if (!channel || (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildStageVoice)) {
-            throw new Error("Configured host channel must be a voice or stage channel for Discord Scheduled Event creation.");
-          }
-
-          if (channel.guildId !== guildId) {
-            throw new Error("Configured host voice channel is not a valid in-server Discord channel.");
-          }
-
-          const scheduledEvent = await guild.scheduledEvents.create({
-            name: title,
-            description,
-            scheduledStartTime: scheduledStartAt,
-            scheduledEndTime: scheduledEndAt,
-            privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
-            entityType:
-              channel.type === ChannelType.GuildStageVoice
-                ? GuildScheduledEventEntityType.StageInstance
-                : GuildScheduledEventEntityType.Voice,
-            channel
-          });
-
-          return { scheduledEventId: scheduledEvent.id };
-        },
-        publishAnnouncement: async ({ channelId, content }) => {
-          const channel = await client.channels.fetch(channelId);
-
-          if (!channel || channel.type === ChannelType.DM || !("send" in channel)) {
-            throw new Error("Configured announcement channel is not a sendable in-server Discord channel.");
-          }
-
-          const message = await channel.send({ content });
-
-          return { messageId: message.id };
-        }
-      });
-      return;
-    }
-
-    if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "e1-configure") {
-      await handleConfigureE1Setup(interaction, db);
-      return;
-    }
-
-    if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "e1-show") {
-      await handleShowE1Setup(interaction, db);
-      return;
-    }
-
-    if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "language-club-upsert") {
-      await handleLanguageClubUpsert(interaction, db);
-      return;
-    }
-
-    if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "language-club-list") {
-      await handleLanguageClubList(interaction, db);
+      await replyGenericInteractionError(interaction, logger);
     }
   });
 
@@ -133,14 +171,41 @@ export async function startDiscordRuntime(
         throw new Error("Configured reminder channel is not a sendable in-server Discord channel.");
       }
 
-      const message = await channel.send({ content });
+      const message = await channel.send({ content, allowedMentions: buildAllowedMentions(content) });
 
       return { messageId: message.id };
     },
-    destroy: async () => {
-      client.destroy();
-    }
+    destroy: () => destroyDiscordClient(client)
   };
+}
+
+export async function destroyDiscordClient(client: { destroy: () => void | Promise<void> }): Promise<void> {
+  await client.destroy();
+}
+
+export function buildAllowedMentions(content: string, trustedUserIds: readonly string[] = []): { parse: []; users?: string[] } {
+  const mentionedUsers = new Set([...content.matchAll(/<@!?(\d{5,20})>/g)].map((match) => match[1]));
+  const users = [...new Set(trustedUserIds)].filter((userId) => mentionedUsers.has(userId));
+  return users.length > 0 ? { parse: [], users } : { parse: [] };
+}
+
+export function isInteractionGuildAllowed(guildId: string | null, allowedGuildIds: readonly string[]): boolean {
+  return isAllowedGuildId(guildId, allowedGuildIds);
+}
+
+async function rejectInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+  await replyEphemeral(interaction, "Perintah ini tidak tersedia di server yang belum diizinkan.");
+}
+
+async function replyGenericInteractionError(
+  interaction: ChatInputCommandInteraction,
+  logger: OperationalLogger
+): Promise<void> {
+  try {
+    await replyEphemeral(interaction, "Terjadi kesalahan saat memproses perintah. Coba lagi nanti.");
+  } catch (replyError) {
+    logger.warn("discord_interaction_error_reply_failed", { error: replyError });
+  }
 }
 
 async function handleCreateLanguageClub(
@@ -155,7 +220,11 @@ async function handleCreateLanguageClub(
       scheduledStartAt: string;
       scheduledEndAt: string;
     }) => Promise<{ scheduledEventId: string }>;
-    publishAnnouncement: (input: { channelId: string; content: string }) => Promise<{ messageId: string }>;
+    publishAnnouncement: (input: {
+      channelId: string;
+      content: string;
+      allowedUserIds: string[];
+    }) => Promise<{ messageId: string }>;
   }
 ): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
@@ -166,7 +235,10 @@ async function handleCreateLanguageClub(
   ]);
 
   if (hostVoiceChannel && hostVoiceChannel.guildId !== interaction.guildId) {
-    await interaction.editReply("Host voice channel override harus berupa voice/stage channel di guild ini.");
+    await editReplyWithoutMentions(
+      interaction,
+      "Host voice channel override harus berupa voice/stage channel di guild ini."
+    );
     return;
   }
 
@@ -195,12 +267,13 @@ async function handleCreateLanguageClub(
   );
 
   if (result.status === "hard_rejected") {
-    await interaction.editReply(`Permintaan ditolak: ${result.reason}`);
+    await editReplyWithoutMentions(interaction, `Permintaan ditolak: ${result.reason}`);
     return;
   }
 
   if (result.status === "publish_failed") {
-    await interaction.editReply(
+    await editReplyWithoutMentions(
+      interaction,
       result.discordScheduledEventId === null
         ? `Event tersimpan dengan ID ${result.eventId}, tetapi publish gagal sebelum announcement terkirim: ${result.reason}`
         : `Event tersimpan dengan ID ${result.eventId} dan Discord Scheduled Event ${result.discordScheduledEventId}, tetapi announcement gagal: ${result.reason}`
@@ -208,7 +281,8 @@ async function handleCreateLanguageClub(
     return;
   }
 
-  await interaction.editReply(
+  await editReplyWithoutMentions(
+    interaction,
     `Event berhasil dibuat dan dipublish. event_id=${result.eventId} mulai=${result.scheduledStartAt} discord_scheduled_event_id=${result.discordScheduledEventId} message_id=${result.messageId}`
   );
 }
@@ -277,7 +351,10 @@ async function handleConfigureE1Setup(interaction: ChatInputCommandInteraction, 
 
     await replyEphemeral(interaction, formatE1ConfigSummary(storedConfig, "Konfigurasi Event Slice E1 tersimpan."));
   } catch (error) {
-    await replyEphemeral(interaction, formatSetupErrorMessage(error));
+    if (!isExpectedOperatorInputError(error)) {
+      throw error;
+    }
+    await replyEphemeral(interaction, `Setup Event Slice E1 ditolak: ${toSafeOperationalErrorMessage(error)}`);
   }
 }
 
@@ -348,7 +425,10 @@ async function handleLanguageClubUpsert(interaction: ChatInputCommandInteraction
       ].join("\n")
     );
   } catch (error) {
-    await replyEphemeral(interaction, `Language Club registry ditolak: ${error instanceof Error ? error.message : "unknown error"}`);
+    if (!isExpectedOperatorInputError(error)) {
+      throw error;
+    }
+    await replyEphemeral(interaction, `Language Club registry ditolak: ${toSafeOperationalErrorMessage(error)}`);
   }
 }
 
@@ -410,21 +490,20 @@ function formatE1ConfigSummary(
   ].join("\n");
 }
 
-function formatSetupErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return `Setup Event Slice E1 ditolak: ${error.message}`;
-  }
-
-  return "Setup Event Slice E1 ditolak karena terjadi error yang tidak dikenal.";
-}
-
 async function replyEphemeral(interaction: ChatInputCommandInteraction, content: string): Promise<void> {
   if (interaction.deferred || interaction.replied) {
-    await interaction.followUp({ content, ephemeral: true });
+    await interaction.followUp({ content, ephemeral: true, allowedMentions: { parse: [] } });
     return;
   }
 
-  await interaction.reply({ content, ephemeral: true });
+  await interaction.reply({ content, ephemeral: true, allowedMentions: { parse: [] } });
+}
+
+async function editReplyWithoutMentions(
+  interaction: ChatInputCommandInteraction,
+  content: string
+): Promise<void> {
+  await interaction.editReply({ content, allowedMentions: { parse: [] } });
 }
 
 function getInteractionRoleIds(interaction: ChatInputCommandInteraction): string[] {
@@ -449,4 +528,13 @@ function getInteractionRoleIds(interaction: ChatInputCommandInteraction): string
 
 function roleBelongsToDifferentGuild(role: Role | APIRole, guildId: string): boolean {
   return "guild" in role && role.guild.id !== guildId;
+}
+
+function isExpectedOperatorInputError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    /^(At least one staff role|A default timezone|Timezone must be|club_key must be|display_name is required|\w+ is required)/.test(
+      error.message
+    )
+  );
 }

@@ -2,6 +2,7 @@
 
 Recommended execution order:
 
+0. `kaddy-e2e-foundation.md` — establish the private-authority, public-projection, and rollback contract before implementation slices.
 1. `milestone-0-foundation-and-bot-skeleton.md` — bootstrap the Discord runtime, SQLite foundation, and job runner skeleton.
 2. `post-m0-seeded-language-club-publish-slice.md` — deliver the first routine event create-and-publish path with durable event policy fields.
 3. `post-e2-language-club-assigned-reminders-slice.md` — add explicit Language Club assignment plus club-aware reminder scheduling and delivery.

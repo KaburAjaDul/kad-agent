@@ -1,4 +1,5 @@
 import { createUuidV7 } from "../../app/lib/uuidv7.js";
+import { operationalLogger, toSafeOperationalErrorMessage } from "../../app/lib/operational-logger.js";
 import type { SqliteDatabase } from "../../app/repo/sqlite.js";
 import { getLanguageClubGuildConfigByGuildId } from "../repo/language-club-guild-config-repo.js";
 import { getLanguageClubByKey } from "../repo/language-club-registry-repo.js";
@@ -43,7 +44,11 @@ export type LanguageClubDiscordPublisher = {
     scheduledStartAt: string;
     scheduledEndAt: string;
   }) => Promise<{ scheduledEventId: string }>;
-  publishAnnouncement: (input: { channelId: string; content: string }) => Promise<{ messageId: string }>;
+  publishAnnouncement: (input: {
+    channelId: string;
+    content: string;
+    allowedUserIds: string[];
+  }) => Promise<{ messageId: string }>;
 };
 
 export type CreateLanguageClubEventResult =
@@ -269,7 +274,8 @@ export async function createLanguageClubEvent(
         timeZone: draftedEvent.timezone,
         hostVoiceChannelId: draftedEvent.hostVoiceChannelId,
         hostDiscordUserIds: normalizedHostDiscordUserIds
-      })
+      }),
+      allowedUserIds: normalizedHostDiscordUserIds
     });
     const publishedAtDate = new Date(baseNow.getTime() + 3);
     const publishedAt = publishedAtDate.toISOString();
@@ -294,7 +300,10 @@ export async function createLanguageClubEvent(
         now: publishedAtDate
       });
     } catch (reminderSchedulingError) {
-      console.error("Language Club event published but reminder scheduling failed", reminderSchedulingError);
+      operationalLogger.error("language_club_reminder_scheduling_failed", {
+        eventId,
+        error: reminderSchedulingError
+      });
     }
 
     return {
@@ -345,8 +354,8 @@ function isAuthorizedStaffActor(actorRoleIds: string[], allowedRoleIds: string[]
 }
 
 function renderTemplate(template: string, labels: Record<string, string>): string {
-  return template.replace(/\{(day_name|date_label|time_label|timezone_label)\}/g, (fullMatch, token: keyof typeof labels) => {
-    return labels[token] ?? fullMatch;
+  return template.replace(/\{(day_name|date_label|time_label|timezone_label)\}/g, (fullMatch, placeholderKey: keyof typeof labels) => {
+    return labels[placeholderKey] ?? fullMatch;
   });
 }
 
@@ -583,12 +592,10 @@ function getTimeZoneParts(date: Date, timeZone: string): Record<"year" | "month"
 }
 
 function formatErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return "Unknown publish error";
+  return toSafeOperationalErrorMessage(error, "Unknown publish error").slice(0, MAX_PROVIDER_ERROR_LENGTH);
 }
+
+const MAX_PROVIDER_ERROR_LENGTH = 500;
 
 function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Error && /UNIQUE constraint failed/i.test(error.message);

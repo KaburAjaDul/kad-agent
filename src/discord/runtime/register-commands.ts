@@ -19,6 +19,10 @@ export async function registerCommands(
   const dryRun = options.dryRun ?? appConfig.botDryRun;
   const guildId = options.guildId;
 
+  if (guildId && !isAllowedGuildId(guildId, appConfig.discord.allowedGuildIds)) {
+    throw new Error("Command registration refused because --guild-id is outside DISCORD_ALLOWED_GUILD_IDS.");
+  }
+
   if (dryRun) {
     return {
       mode: "dry-run",
@@ -36,6 +40,10 @@ export async function registerCommands(
     throw new Error("Live command registration requires --guild-id <snowflake>. Global registration is disabled for this slice.");
   }
 
+  if (appConfig.discord.allowedGuildIds.length === 0) {
+    throw new Error("DISCORD_ALLOWED_GUILD_IDS is required for live command registration.");
+  }
+
   const rest = new REST({ version: "10" }).setToken(appConfig.discord.botToken);
   const route = Routes.applicationGuildCommands(appConfig.discord.appId, guildId);
 
@@ -47,4 +55,8 @@ export async function registerCommands(
     commandCount: foundationCommands.length,
     guildId
   };
+}
+
+export function isAllowedGuildId(guildId: string | null | undefined, allowedGuildIds: readonly string[]): boolean {
+  return typeof guildId === "string" && guildId.length > 0 && allowedGuildIds.includes(guildId);
 }

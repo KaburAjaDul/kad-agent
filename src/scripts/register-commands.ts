@@ -1,4 +1,5 @@
 import { loadAppConfig } from "../app/config/env.js";
+import { createOperationalLogger } from "../app/lib/operational-logger.js";
 import { assertLiveDiscordCommandEnabled } from "../app/runtime/live-discord-command-guard.js";
 import { registerCommands } from "../discord/runtime/register-commands.js";
 
@@ -20,13 +21,14 @@ if (!cliDryRun) {
   });
 }
 
-const appConfig = cliDryRun ? preflightConfig : loadAppConfig();
+const appConfig = cliDryRun ? preflightConfig : loadAppConfig({ requireDiscord: false });
+const logger = createOperationalLogger({ level: appConfig.logLevel });
 
 const result = await registerCommands(appConfig, {
   dryRun: cliDryRun || appConfig.botDryRun,
   guildId: cliGuildId
 });
-console.info(JSON.stringify(result));
+logger.info("discord_commands_registration_complete", result);
 
 function readGuildIdFlag(argv: string[]): string | undefined {
   const flagIndex = argv.indexOf("--guild-id");

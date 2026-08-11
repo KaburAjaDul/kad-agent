@@ -137,6 +137,49 @@ describe("event policy classification", () => {
       db.close();
     }
   });
+
+  it("redacts and bounds provider failures in reminder storage", async () => {
+    const db = createSqliteConnection(":memory:");
+    const providerError = `Bearer abc.secret.value?token=private 123456789012345678 ${"provider-detail ".repeat(60)}`;
+
+    try {
+      runMigrations(db);
+      seedFoundationData(db);
+      insertTestEvent(db, "event_redaction");
+
+      const reminder = buildReminderJobRecord({
+        eventId: "event_redaction",
+        reminderType: "t_minus_1h",
+        audienceKind: "attendee",
+        scheduledFor: "2026-04-24T11:30:00.000Z",
+        payload: { targetChannelId: "announcement-1" },
+        now: new Date("2026-04-23T10:00:00.000Z")
+      });
+      insertReminderJob(db, reminder);
+
+      const result = await deliverDueEventReminders(
+        db,
+        {
+          publishReminder: async () => {
+            throw new Error(providerError);
+          }
+        },
+        new Date("2026-04-24T11:31:00.000Z")
+      );
+      const row = db
+        .prepare("SELECT delivery_error FROM event_reminders WHERE id = ?")
+        .get(reminder.id) as { delivery_error: string | null };
+
+      expect(result).toEqual({ discoveredDueReminders: 1, delivered: 0, failed: 1 });
+      expect(row.delivery_error).toBeTypeOf("string");
+      expect(row.delivery_error).not.toContain("abc.secret.value");
+      expect(row.delivery_error).not.toContain("private");
+      expect(row.delivery_error).not.toContain("123456789012345678");
+      expect(row.delivery_error?.length ?? 0).toBeLessThanOrEqual(500);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 function insertTestEvent(db: ReturnType<typeof createSqliteConnection>, eventId: string): void {

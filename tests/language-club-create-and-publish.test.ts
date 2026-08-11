@@ -14,7 +14,7 @@ import { upsertLanguageClubCommand } from "../src/events/service/language-club-r
 describe("createLanguageClubEvent", () => {
   it("creates one scheduled event, persists its ID, then publishes the announcement", async () => {
     const db = createTestDatabase();
-    const publishedPayloads: Array<{ channelId: string; content: string }> = [];
+    const publishedPayloads: Array<{ channelId: string; content: string; allowedUserIds: string[] }> = [];
     const scheduledEventPayloads: Array<{
       guildId: string;
       channelId: string;
@@ -71,7 +71,8 @@ describe("createLanguageClubEvent", () => {
       expect(publishedPayloads).toEqual([
         {
           channelId: "announcement-1",
-          content: expect.stringContaining("English Club kita buka lagi")
+          content: expect.stringContaining("English Club kita buka lagi"),
+          allowedUserIds: []
         }
       ]);
       expect(scheduledEventPayloads).toEqual([
@@ -175,7 +176,7 @@ describe("createLanguageClubEvent", () => {
 
   it("persists an explicit per-event host channel override and host snapshots", async () => {
     const db = createTestDatabase();
-    const publishedPayloads: Array<{ channelId: string; content: string }> = [];
+    const publishedPayloads: Array<{ channelId: string; content: string; allowedUserIds: string[] }> = [];
     const scheduledEventChannelIds: string[] = [];
 
     try {
@@ -247,7 +248,8 @@ describe("createLanguageClubEvent", () => {
       expect(publishedPayloads).toEqual([
         {
           channelId: "announcement-1",
-          content: expect.stringContaining("<#voice-2>")
+          content: expect.stringContaining("<#voice-2>"),
+          allowedUserIds: ["host-1", "host-2"]
         }
       ]);
       expect(scheduledEventChannelIds).toEqual(["voice-2"]);
@@ -451,7 +453,7 @@ describe("createLanguageClubEvent", () => {
 
   it("deduplicates duplicate host inputs before persistence", async () => {
     const db = createTestDatabase();
-    const publishedPayloads: Array<{ channelId: string; content: string }> = [];
+    const publishedPayloads: Array<{ channelId: string; content: string; allowedUserIds: string[] }> = [];
 
     try {
       configureTestGuild(db);
@@ -493,6 +495,7 @@ describe("createLanguageClubEvent", () => {
       ]);
       expect(publishedPayloads[0]?.content.match(/<@host-1>/g)?.length ?? 0).toBe(1);
       expect(publishedPayloads[0]?.content.match(/<@host-2>/g)?.length ?? 0).toBe(1);
+      expect(publishedPayloads[0]?.allowedUserIds).toEqual(["host-1", "host-2"]);
     } finally {
       db.close();
     }
@@ -625,6 +628,55 @@ describe("createLanguageClubEvent", () => {
         { fromState: null, toState: "drafted" },
         { fromState: "drafted", toState: "publish_failed" }
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("redacts and bounds provider failures in the publish result and event record", async () => {
+    const db = createTestDatabase();
+    const providerError = `Authorization: Bearer abc.secret.value?token=private 123456789012345678 ${"provider-detail ".repeat(60)}`;
+
+    try {
+      configureTestGuild(db);
+
+      const result = await createLanguageClubEvent(
+        {
+          guildId: "guild-1",
+          actorDiscordUserId: "user-1",
+          actorRoleIds: ["staff-role"],
+          sourceInteractionId: "interaction-redaction",
+          clubKey: "english",
+          date: "2026-04-24",
+          time: "19:30"
+        },
+        {
+          db,
+          publisher: createTestPublisher({
+            createScheduledEvent: async () => {
+              throw new Error(providerError);
+            }
+          }),
+          now: new Date("2026-04-23T10:00:00.000Z")
+        }
+      );
+
+      expect(result.status).toBe("publish_failed");
+
+      if (result.status !== "publish_failed") {
+        throw new Error("Expected a publish_failed result.");
+      }
+
+      const event = getLanguageClubEventById(db, result.eventId);
+      const transitions = listEventStateTransitions(db, result.eventId);
+
+      for (const value of [result.reason, event?.publishError, transitions[1]?.reason]) {
+        expect(value).toBeTypeOf("string");
+        expect(value).not.toContain("abc.secret.value");
+        expect(value).not.toContain("private");
+        expect(value).not.toContain("123456789012345678");
+        expect(value?.length ?? 0).toBeLessThanOrEqual(500);
+      }
     } finally {
       db.close();
     }
@@ -786,10 +838,14 @@ describe("createLanguageClubEvent", () => {
         "drafted",
         "published"
       ]);
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        "Language Club event published but reminder scheduling failed",
-        expect.any(Error)
-      );
+      expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+      const logLine = consoleErrorSpy.mock.calls[0]?.[0];
+      expect(logLine).toBeTypeOf("string");
+      expect(JSON.parse(String(logLine))).toMatchObject({
+        level: "error",
+        event: "language_club_reminder_scheduling_failed",
+        error: expect.objectContaining({ message: "no such table: event_reminders" })
+      });
     } finally {
       consoleErrorSpy.mockRestore();
       db.close();
@@ -834,7 +890,11 @@ function createTestPublisher(overrides?: {
     scheduledStartAt: string;
     scheduledEndAt: string;
   }) => Promise<{ scheduledEventId: string }>;
-  publishAnnouncement?: (input: { channelId: string; content: string }) => Promise<{ messageId: string }>;
+  publishAnnouncement?: (input: {
+    channelId: string;
+    content: string;
+    allowedUserIds: string[];
+  }) => Promise<{ messageId: string }>;
 }) {
   return {
     createScheduledEvent: overrides?.createScheduledEvent ?? (async () => ({ scheduledEventId: "scheduled-event-default" })),

@@ -7,6 +7,8 @@
 - `event-operations.md`
 - `approval-policy.md`
 - `event-approval-workflow.md`
+- `public-publication-boundary.md`
+- `kaddy-threat-model.md`
 - `knowledge-safety.md`
 - `llm-runtime-strategy.md`
 

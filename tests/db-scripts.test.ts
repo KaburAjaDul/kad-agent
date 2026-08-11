@@ -25,12 +25,14 @@ describe("DB-only scripts", () => {
     const databasePath = createTempDatabasePath("kad-agent-migrate-");
     const stdout = runDbScript("migrate", databasePath);
     const result = JSON.parse(stdout.trim()) as {
-      databasePath: string;
+      event: string;
+      level: string;
       appliedMigrations: string[];
     };
 
-    expect(result).toEqual({
-      databasePath,
+    expect(result).toMatchObject({
+      event: "database_migrations_complete",
+      level: "info",
       appliedMigrations: [
         "0001_foundation",
         "0002_event_slice_e1",
@@ -40,6 +42,7 @@ describe("DB-only scripts", () => {
         "0006_event_slice_e2_reminder_delivery"
       ]
     });
+    expect(stdout).not.toContain(databasePath);
     expect(selectCount(databasePath, "schema_migrations")).toBe(6);
   });
 
@@ -47,14 +50,17 @@ describe("DB-only scripts", () => {
     const databasePath = createTempDatabasePath("kad-agent-seed-");
     const stdout = runDbScript("seed", databasePath);
     const result = JSON.parse(stdout.trim()) as {
-      databasePath: string;
+      event: string;
+      level: string;
       insertedCount: number;
     };
 
-    expect(result).toEqual({
-      databasePath,
+    expect(result).toMatchObject({
+      event: "foundation_seed_complete",
+      level: "info",
       insertedCount: 1
     });
+    expect(stdout).not.toContain(databasePath);
     expect(selectCount(databasePath, "event_templates")).toBe(1);
   });
 
