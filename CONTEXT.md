@@ -59,3 +59,25 @@ Gathering` may have one `Discord Event Binding` and one public `Agenda Entry`.
 Series. “Language Club Session” identifies one occurrence. “Language Club
 Agenda Entry” means the public schedule listing for that Session. It does not
 mean its internal run of show.
+
+## Transitional publication authority
+
+Discord Scheduled Events that predate Kaddy-managed operations are imported as
+`Imported Schedule Observations`. The Kaddy publication slice validates and
+sanitizes those observations, then signs the resulting public Agenda snapshot.
+Only the signed snapshot is a website publication authority; Discord payloads,
+event IDs, descriptions, hosts, and handles never cross the public boundary.
+
+The sync is pinned to a secret `DISCORD_TARGET_GUILD_ID` and asserts the
+configured display name. It never logs unsupported event titles; an unknown
+scheduled event reports only a count and leaves the last known good snapshot.
+The signed wire body is recursively key-sorted canonical JSON. The signature
+covers `v1`, epoch-millisecond `issuedAt`, epoch-millisecond `expiresAt`
+(five minutes later), nonce, base64url SHA-256 body digest, and the exact body.
+
+Future Kaddy-created Sessions remain operationally authoritative in SQLite, with
+Discord treated as the delivery surface. A Discord observation may be corrected
+or withdrawn by the Staging environment owner; the target is correction within
+one scheduled sync (15 minutes) and withdrawal within one sync after a verified
+privacy or safety report. Unknown classifications, missing approval, invalid
+dates, non-public events, and signature failures fail closed without publishing.

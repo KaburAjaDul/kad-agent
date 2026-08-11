@@ -1,0 +1,67 @@
+name: Sync staging agenda
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-agenda-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: Staging
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run publication tests
+        run: npm test -- --run tests/publication.test.ts
+
+      - name: Build production output
+        run: npm run build
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      - name: Publish approved agenda projection
+        run: npm run sync:staging
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_TARGET_GUILD_ID: ${{ secrets.DISCORD_TARGET_GUILD_ID }}
+          DISCORD_TARGET_GUILD_NAME: ${{ vars.DISCORD_TARGET_GUILD_NAME }}
+          KAD_PROJECTION_ENDPOINT: ${{ vars.KAD_PROJECTION_ENDPOINT }}
+          KAD_PROJECTION_KEY_ID: ${{ vars.KAD_PROJECTION_KEY_ID }}
+          KAD_PROJECTION_SIGNING_PRIVATE_KEY: ${{ secrets.KAD_PROJECTION_SIGNING_PRIVATE_KEY }}
+          KAD_PUBLIC_ID_KEY: ${{ secrets.KAD_PUBLIC_ID_KEY }}
+          PUBLICATION_APPROVED: ${{ vars.PUBLICATION_APPROVED }}
+
+      - name: Verify public staging agenda
+        env:
+          KAD_PROJECTION_ENDPOINT: ${{ vars.KAD_PROJECTION_ENDPOINT }}
+        run: |
+          public_endpoint="${KAD_PROJECTION_ENDPOINT%/internal/v1/projections/agenda}/api/v1/agenda"
+          body="$(curl --fail --silent --show-error --max-time 10 "$public_endpoint")"
+          BODY="$body" node --input-type=module -e '
+            const payload = JSON.parse(process.env.BODY ?? "");
+            if (payload.schemaVersion !== "v1" || !Array.isArray(payload.entries)) process.exit(1);
+          '
