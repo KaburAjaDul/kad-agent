@@ -9,8 +9,8 @@ const dryRun = process.argv.slice(2).includes("--dry-run");
 
 async function main(): Promise<void> {
   const appConfig = loadAppConfig({ requireDiscord: true });
-  const guildId = requiredEnv("DISCORD_TARGET_GUILD_ID", appConfig.discord.allowedGuildIds[0]);
-  const guildName = requiredEnv("DISCORD_TARGET_GUILD_NAME");
+  const guildId = requiredConfig("DISCORD_TARGET_GUILD_ID", appConfig.publication?.targetGuildId);
+  const guildName = requiredConfig("DISCORD_TARGET_GUILD_NAME", appConfig.publication?.targetGuildName);
   if (!appConfig.discord.allowedGuildIds.includes(guildId)) {
     throw new Error("Discord target guild is not in the configured allowlist.");
   }
@@ -61,8 +61,8 @@ async function main(): Promise<void> {
   }
 }
 
-function requiredEnv(name: string, fallback?: string): string {
-  const value = process.env[name]?.trim() || fallback?.trim();
+function requiredConfig(name: string, configuredValue?: string): string {
+  const value = configuredValue?.trim();
   if (!value) throw new Error(`${name} is required for Discord observation reconciliation.`);
   return value;
 }

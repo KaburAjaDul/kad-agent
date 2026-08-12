@@ -24,6 +24,7 @@ Start in `docs/product-specs/kad-agent.md` and `docs/exec-plans/active/milestone
 - Keep `.env` out of version control. `.env.example` documents key names only; inject runtime values through the process environment or a secret manager.
 - For a safe local smoke, set only `BOT_DRY_RUN=true` (and optionally `DATABASE_PATH`) or run `npm run start:dry-run`. This initializes the local SQLite schema, seeds foundation data, and runs one reminder sweep without Discord credentials or network calls.
 - Before live Discord validation, set `BOT_DRY_RUN=false` and inject the required logical keys `DISCORD_APP_ID`, `DISCORD_BOT_TOKEN`, and `DISCORD_ALLOWED_GUILD_IDS`. The guild allowlist is a comma-separated list of Discord snowflakes. `npm run start` and `npm run register-commands` refuse live use without these controls.
+- Publication observe/active mode additionally requires one target guild. Set either `DISCORD_TARGET_GUILD_ID` or `DISCORD_TARGET_GUILD_ID_FILE`, never both. A file-backed target may reuse `DISCORD_ALLOWED_GUILD_IDS_FILE` only when that protected file contains exactly one guild ID; `DISCORD_TARGET_GUILD_NAME` remains non-secret configuration.
 - Initialize SQLite: `npm run db:init`
 - Register slash commands in the target guild explicitly: `npm run register-commands -- --guild-id <discord-guild-snowflake>`
 - Start the bot runtime: `npm run start`

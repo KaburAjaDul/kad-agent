@@ -95,6 +95,122 @@ describe("Kaddy runtime mode and observability", () => {
     }
   });
 
+  it("supports one protected target guild file for observe and active publication", () => {
+    const directory = mkdtempSync(join(tmpdir(), "kaddy-target-guild-file-"));
+    const appIdFile = join(directory, "app-id");
+    const tokenFile = join(directory, "token");
+    const guildsFile = join(directory, "guilds");
+    const publicIdKeyFile = join(directory, "public-id.key");
+    const signingPrivateKeyFile = join(directory, "projection-private.pem");
+    const { privateKey } = generateKeyPairSync("ed25519");
+    writeFileSync(appIdFile, "123456789012345678\n");
+    writeFileSync(tokenFile, "file-token\n");
+    writeFileSync(guildsFile, "123456789012345678\n");
+    writeFileSync(publicIdKeyFile, "0123456789abcdef0123456789abcdef\n");
+    writeFileSync(signingPrivateKeyFile, privateKey.export({ format: "pem", type: "pkcs8" }));
+    const base = {
+      NODE_ENV: "test",
+      BOT_DRY_RUN: "false",
+      DISCORD_APP_ID_FILE: appIdFile,
+      DISCORD_BOT_TOKEN_FILE: tokenFile,
+      DISCORD_ALLOWED_GUILD_IDS_FILE: guildsFile,
+      DISCORD_TARGET_GUILD_ID_FILE: guildsFile,
+      DISCORD_TARGET_GUILD_NAME: "Kabur Aja Dulu",
+      KAD_PROJECTION_ENDPOINT: "https://staging.example.test/internal/v1/projections/agenda",
+      KAD_PUBLIC_AGENDA_ENDPOINT: "https://staging.example.test/api/v1/agenda",
+      KAD_PUBLIC_ID_KEY_FILE: publicIdKeyFile,
+      KADDY_PUBLICATION_MODE: "observe"
+    };
+    try {
+      const observed = loadAppConfig({ env: base, loadEnvFile: false });
+      expect(observed.publication).toMatchObject({
+        mode: "observe",
+        targetGuildId: "123456789012345678",
+        targetGuildName: "Kabur Aja Dulu"
+      });
+
+      const active = loadAppConfig({
+        env: {
+          ...base,
+          KADDY_RUNTIME_MODE: "operate",
+          KADDY_PUBLICATION_MODE: "active",
+          KADDY_PUBLICATION_CUTOVER_CONFIRMED: "true",
+          KAD_PROJECTION_KEY_ID: "staging-key",
+          KAD_PROJECTION_SIGNING_PRIVATE_KEY_FILE: signingPrivateKeyFile
+        },
+        loadEnvFile: false
+      });
+      expect(active.publication).toMatchObject({
+        mode: "active",
+        targetGuildId: "123456789012345678",
+        targetGuildName: "Kabur Aja Dulu"
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects ambiguous, malformed, and multi-ID target guild files", () => {
+    const directory = mkdtempSync(join(tmpdir(), "kaddy-target-guild-rejections-"));
+    const guildsFile = join(directory, "guilds");
+    const base = {
+      NODE_ENV: "test",
+      BOT_DRY_RUN: "true",
+      DISCORD_TARGET_GUILD_ID_FILE: guildsFile
+    };
+    try {
+      writeFileSync(guildsFile, "123456789012345678\n");
+      expect(() => loadAppConfig({
+        env: { ...base, DISCORD_TARGET_GUILD_ID: "123456789012345678" },
+        loadEnvFile: false
+      })).toThrow("cannot both be set");
+
+      writeFileSync(guildsFile, "not-a-snowflake\n");
+      expect(() => loadAppConfig({ env: base, loadEnvFile: false }))
+        .toThrow("DISCORD_TARGET_GUILD_ID_FILE must contain exactly one Discord snowflake ID.");
+
+      writeFileSync(guildsFile, "123456789012345678\n987654321098765432\n");
+      expect(() => loadAppConfig({ env: base, loadEnvFile: false }))
+        .toThrow("DISCORD_TARGET_GUILD_ID_FILE must contain exactly one Discord snowflake ID.");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("selects a file-backed target that is not the first guild in the allowlist", () => {
+    const directory = mkdtempSync(join(tmpdir(), "kaddy-target-guild-selection-"));
+    const guildsFile = join(directory, "guilds");
+    const targetGuildFile = join(directory, "target-guild");
+    const publicIdKeyFile = join(directory, "public-id.key");
+    writeFileSync(guildsFile, "123456789012345678,987654321098765432\n");
+    writeFileSync(targetGuildFile, "987654321098765432\n");
+    writeFileSync(publicIdKeyFile, "0123456789abcdef0123456789abcdef\n");
+    try {
+      const config = loadAppConfig({
+        env: {
+          NODE_ENV: "test",
+          BOT_DRY_RUN: "true",
+          KADDY_PUBLICATION_MODE: "observe",
+          DISCORD_ALLOWED_GUILD_IDS_FILE: guildsFile,
+          DISCORD_TARGET_GUILD_ID_FILE: targetGuildFile,
+          DISCORD_TARGET_GUILD_NAME: "Kabur Aja Dulu",
+          KAD_PROJECTION_ENDPOINT: "https://staging.example.test/internal/v1/projections/agenda",
+          KAD_PUBLIC_AGENDA_ENDPOINT: "https://staging.example.test/api/v1/agenda",
+          KAD_PUBLIC_ID_KEY_FILE: publicIdKeyFile
+        },
+        loadEnvFile: false
+      });
+
+      expect(config.discord.allowedGuildIds).toEqual([
+        "123456789012345678",
+        "987654321098765432"
+      ]);
+      expect(config.publication?.targetGuildId).toBe("987654321098765432");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when identity or every allowlisted guild is not visible", () => {
     const client = { user: { id: "123456789012345678" }, guilds: { cache: new Map([["123456789012345678", {}]]) } };
     expect(() => assertDiscordIdentityAndGuilds(client, "987654321098765432", ["123456789012345678"])).toThrow("identity");
