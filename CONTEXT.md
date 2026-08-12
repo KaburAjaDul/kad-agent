@@ -117,8 +117,11 @@ Only the signed snapshot is a website publication authority; Discord payloads,
 event IDs, descriptions, hosts, and handles never cross the public boundary.
 
 The sync is pinned to a secret `DISCORD_TARGET_GUILD_ID` and asserts the
-configured display name. It never logs unsupported event titles; an unknown
-scheduled event reports only a count and leaves the last known good snapshot.
+configured display name. It never logs unsupported event titles. Active and
+default policy reject an unknown scheduled event and leave the last known good
+snapshot; observe mode may record only a valid active/scheduled unknown as a
+redacted private observation (null normalized title, no agenda/approval/public
+write) and reports only the aggregate count.
 The signed wire body is recursively key-sorted canonical JSON. The signature
 covers `v1`, epoch-millisecond `issuedAt`, epoch-millisecond `expiresAt`
 (five minutes later), nonce, base64url SHA-256 body digest, and the exact body.

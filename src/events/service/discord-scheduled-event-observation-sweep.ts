@@ -7,6 +7,7 @@ import {
 } from "../../publication/discord-client.js";
 import {
   reconcileDiscordScheduledEventObservations,
+  type UnknownTitlePolicy,
   type DiscordObservationReconciliationResult
 } from "./discord-scheduled-event-observation-service.js";
 
@@ -23,6 +24,8 @@ export type DiscordScheduledEventObservationSweepOptions = {
   guildId: string;
   guildName: string;
   context: RuntimeLeaseContext;
+  /** Defaults to reject; publication runtime sets record_shadow only in observe mode. */
+  unknownTitlePolicy?: UnknownTitlePolicy;
   fetchImpl?: DiscordFetch;
   sleepImpl?: RetryOptions["sleepImpl"];
   timeoutMs?: number;
@@ -65,6 +68,7 @@ export async function runDiscordScheduledEventObservationSweep(
     guildId: options.guildId,
     events,
     context: options.context,
+    unknownTitlePolicy: options.unknownTitlePolicy,
     observedAt,
     // Keep SQLite mutation time tied to the same trusted local sample that
     // is returned to the caller; provider timestamps never enter this path.

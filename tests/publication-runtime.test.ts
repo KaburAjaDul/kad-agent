@@ -4,6 +4,7 @@ import { runMigrations } from "../src/app/repo/migrations.js";
 import { acquireRuntimeLease } from "../src/app/repo/runtime-lease-repo.js";
 import { loadAppConfig } from "../src/app/config/env.js";
 import { createPublicationRuntime } from "../src/publication/publication-runtime.js";
+import { BackgroundJobRunner } from "../src/app/runtime/job-runner.js";
 import { generateKeyPairSync } from "node:crypto";
 import type { AppConfig } from "../src/app/config/env.js";
 import { approvePublicationApproval, readPublicationApproval } from "../src/publication/publication-approval-service.js";
@@ -101,6 +102,144 @@ describe("publication runtime integration", () => {
       state: "pending"
     });
     expect(calls).toBe(3);
+  });
+
+  it("records valid unknown titles only in observe mode and reports an unknown reconciliation without public writes", async () => {
+    const db = database();
+    const config = observeConfig();
+    const context = runtimeContext(db);
+    const bodies = [
+      workerHead(50),
+      [{ id: GUILD_ID, name: "KaburAjaDulu" }],
+      [{
+        id: EVENT_ID,
+        name: "unreviewed raw title must not persist",
+        scheduled_start_time: "2026-08-20T10:00:00.000Z",
+        scheduled_end_time: "2026-08-20T11:00:00.000Z",
+        status: 1,
+        entity_type: 3,
+        privacy_level: 2,
+        guild_id: GUILD_ID
+      }]
+    ];
+    let calls = 0;
+    const runtime = createPublicationRuntime({
+      db,
+      appConfig: config,
+      context,
+      isLeaseValid: () => true,
+      now: () => new Date(NOW),
+      fetchImpl: async () => new Response(JSON.stringify(bodies[calls++] ?? []), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    });
+    const result = await runtime?.job.reconcile({ now: new Date(NOW), mode: "observe", canDispatch: false, ...context });
+    expect(result).toMatchObject({ reconciliationOutcome: "unknown", unknownEvents: 1, revision: 50 });
+    expect(db.prepare("SELECT normalized_title, classification_state FROM discord_scheduled_event_observations_current").get()).toEqual({ normalized_title: null, classification_state: "unknown" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM private_agenda_entries").get()).toMatchObject({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM publication_approvals").get()).toMatchObject({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM public_projection_outbox").get()).toMatchObject({ count: 0 });
+    expect(calls).toBe(3);
+  });
+
+  it("keeps active unknown snapshots fail-closed without revision, private, outbox, or dispatch mutation", async () => {
+    const db = database();
+    const context = runtimeContext(db);
+    const config = activeConfig();
+    const bodies = [
+      workerHead(50),
+      [{ id: GUILD_ID, name: "KaburAjaDulu" }],
+      [{
+        id: EVENT_ID,
+        name: "Japanese for beginner N5",
+        scheduled_start_time: "2026-08-20T10:00:00.000Z",
+        scheduled_end_time: "2026-08-20T11:00:00.000Z",
+        status: 1,
+        entity_type: 3,
+        privacy_level: 2,
+        guild_id: GUILD_ID
+      }],
+      workerHead(50),
+      [{ id: GUILD_ID, name: "KaburAjaDulu" }],
+      [{
+        id: EVENT_ID,
+        name: "unreviewed raw title",
+        scheduled_start_time: "2026-08-20T10:00:00.000Z",
+        scheduled_end_time: "2026-08-20T11:00:00.000Z",
+        status: 1,
+        entity_type: 3,
+        privacy_level: 2,
+        guild_id: GUILD_ID
+      }]
+    ];
+    let calls = 0;
+    const runtime = createPublicationRuntime({
+      db,
+      appConfig: config,
+      context,
+      isLeaseValid: () => true,
+      now: () => new Date(NOW),
+      fetchImpl: async () => new Response(JSON.stringify(bodies[calls++] ?? []), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    });
+    if (!runtime?.operator.enqueueApprovedProjection) throw new Error("active enqueue unavailable");
+
+    await runtime.job.reconcile({ now: new Date(NOW), mode: "active", canDispatch: true, ...context });
+    const pending = db.prepare("SELECT id FROM private_agenda_entries LIMIT 1").get() as { id: string };
+    const approval = readPublicationApproval(db, pending.id);
+    if (!approval?.source) throw new Error("approval fixture unavailable");
+    approvePublicationApproval(db, {
+      agendaEntryId: pending.id,
+      operatorId: "operator-lkg",
+      expected: {
+        sourceObservationId: approval.source.observationId,
+        sourceVersion: approval.source.sourceVersion,
+        observationState: "present",
+        agendaState: "pending"
+      },
+      reason: "LKG fixture approval.",
+      context,
+      leaseNow: () => new Date(NOW),
+      now: NOW,
+      enqueueApprovedProjection: runtime.operator.enqueueApprovedProjection
+    });
+
+    const before = {
+      history: db.prepare("SELECT * FROM discord_scheduled_event_observation_history ORDER BY id").all(),
+      current: db.prepare("SELECT * FROM discord_scheduled_event_observations_current ORDER BY provider_event_id").all(),
+      agenda: db.prepare("SELECT * FROM private_agenda_entries ORDER BY id").all(),
+      approvals: db.prepare("SELECT * FROM publication_approvals ORDER BY id").all(),
+      outbox: db.prepare("SELECT * FROM public_projection_outbox ORDER BY id").all(),
+      revisions: db.prepare("SELECT * FROM public_projection_revisions ORDER BY projection_type").all()
+    };
+    let dispatched = false;
+    const originalDispatch = runtime.job.dispatch;
+    runtime.job.dispatch = async (...args) => {
+      dispatched = true;
+      return originalDispatch?.(...args);
+    };
+
+    const runner = new BackgroundJobRunner(db, {
+      mode: "operate",
+      publicationMode: "active",
+      publication: runtime.job,
+      isLeaseValid: () => true,
+      runtimeLeaseName: context.runtimeLeaseName,
+      runtimeOwnerId: context.runtimeOwnerId,
+      runtimeFencingToken: context.runtimeFencingToken
+    });
+    const result = await runner.runPublicationSweep(new Date(NOW));
+    expect(result).toMatchObject({ mode: "active", observed: false, dispatched: false, publicationOutcome: "failed" });
+    expect(dispatched).toBe(false);
+    expect(db.prepare("SELECT * FROM discord_scheduled_event_observation_history ORDER BY id").all()).toEqual(before.history);
+    expect(db.prepare("SELECT * FROM discord_scheduled_event_observations_current ORDER BY provider_event_id").all()).toEqual(before.current);
+    expect(db.prepare("SELECT * FROM private_agenda_entries ORDER BY id").all()).toEqual(before.agenda);
+    expect(db.prepare("SELECT * FROM publication_approvals ORDER BY id").all()).toEqual(before.approvals);
+    expect(db.prepare("SELECT * FROM public_projection_outbox ORDER BY id").all()).toEqual(before.outbox);
+    expect(db.prepare("SELECT * FROM public_projection_revisions ORDER BY projection_type").all()).toEqual(before.revisions);
   });
 
   it("refuses a stale runtime context before any REST request", async () => {

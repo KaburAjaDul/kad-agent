@@ -88,20 +88,26 @@ async function reconcilePublicationRuntime(
     throw new Error("Publication observation configuration is incomplete.");
   }
 
-  await synchronizeRemoteRevision(options, context);
-
+  // Read the remote head first, but defer the local revision-floor write until
+  // the complete Discord snapshot has passed fail-closed classification.
+  // An active unknown-title rejection must leave the local LKG/revision intact.
+  const remoteRevision = await readRemoteRevision(options);
   const observation = await runDiscordScheduledEventObservationSweep({
     db: options.db,
     token: options.appConfig.discord.botToken,
     guildId: publication.targetGuildId,
     guildName: publication.targetGuildName,
     context,
+    // Unknown titles are explicitly shadow-recorded only for observe mode;
+    // active and direct/default reconciliation remain fail-closed.
+    unknownTitlePolicy: publication.mode === "observe" ? "record_shadow" : "reject",
     fetchImpl: options.fetchImpl,
     timeoutMs: publication.requestTimeoutMs,
     clock: options.now
   });
+  await synchronizeRemoteRevision(options, context, remoteRevision);
 
-  let reconciliationOutcome: PublicationObservation["reconciliationOutcome"] = "success";
+  let reconciliationOutcome: PublicationObservation["reconciliationOutcome"] = observation.unknown > 0 ? "unknown" : "success";
   if (publication.mode === "active") {
     enqueueObservedSnapshotIfInitialized(options, context, observation.observedAt);
     recoverExpiredPublicProjectionOutbox(options.db, { ...context, now: currentDate(options) });
@@ -115,6 +121,7 @@ async function reconcilePublicationRuntime(
 
   return {
     reconciliationOutcome,
+    unknownEvents: observation.unknown,
     revision: getPublicProjectionRevision(options.db)?.revision,
     outboxStateCounts: queryOutboxStateCounts(options.db)
   };
@@ -235,8 +242,21 @@ function enqueueObservedSnapshotIfInitialized(
 
 async function synchronizeRemoteRevision(
   options: CreatePublicationRuntimeOptions,
-  context: RuntimeLeaseContext
+  context: RuntimeLeaseContext,
+  revisionFloor?: number
 ): Promise<void> {
+  const publication = options.appConfig.publication;
+  if (!publication?.endpoint || !publication.publicAgendaEndpoint) {
+    throw new Error("Publication head synchronization endpoints are incomplete.");
+  }
+  synchronizePublicProjectionRevisionFloor(options.db, {
+    ...context,
+    revisionFloor: revisionFloor ?? (await readRemoteRevision(options)),
+    now: currentDate(options)
+  });
+}
+
+async function readRemoteRevision(options: CreatePublicationRuntimeOptions): Promise<number> {
   const publication = options.appConfig.publication;
   if (!publication?.endpoint || !publication.publicAgendaEndpoint) {
     throw new Error("Publication head synchronization endpoints are incomplete.");
@@ -247,11 +267,7 @@ async function synchronizeRemoteRevision(
     fetchImpl: options.fetchImpl,
     timeoutMs: publication.requestTimeoutMs
   });
-  synchronizePublicProjectionRevisionFloor(options.db, {
-    ...context,
-    revisionFloor: remote.revision,
-    now: currentDate(options)
-  });
+  return remote.revision;
 }
 
 function requireContext(
