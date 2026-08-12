@@ -8,3 +8,6 @@ data
 .gitignore
 *.log
 coverage
+*.sqlite
+*.sqlite-*
+*.db

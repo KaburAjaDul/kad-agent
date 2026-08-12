@@ -14,6 +14,7 @@
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json",
     "check": "npm run typecheck && npm test",
+    "test:release": "vitest run tests/release-supply-chain.test.ts",
     "audit": "npm audit --audit-level=high",
     "migrate": "tsx src/scripts/migrate.ts",
     "seed": "tsx src/scripts/seed.ts",

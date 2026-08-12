@@ -31,6 +31,7 @@ COPY --from=build --chown=kad-agent:kad-agent /app/dist ./dist
 
 VOLUME ["/data"]
 EXPOSE 3000
+STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.HEALTH_PORT || '3000') + '/readyz').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]
 USER kad-agent

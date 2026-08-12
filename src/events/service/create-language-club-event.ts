@@ -10,11 +10,15 @@ import {
   findLanguageClubEventBySchedule,
   findSupportedLanguageClubTemplate,
   getLanguageClubEventById,
-  markLanguageClubEventPublishFailed,
-  markLanguageClubEventPublished,
-  storeLanguageClubEventDiscordScheduledEventId
+  listEventHostSnapshotsByEventId,
+  markLanguageClubEventPublishFailed
 } from "../repo/language-club-event-repo.js";
 import { buildReminderJobRecord } from "./reminder-job-factory.js";
+import {
+  publishLanguageClubEventEffects,
+  reconcileLanguageClubEventEffects,
+  type LanguageClubEffectExecutionContext
+} from "./language-club-effect-reconciliation.js";
 
 const SUPPORTED_TEMPLATE_KEY = "language_club_default";
 const SUPPORTED_TEMPLATE_VERSION = 1;
@@ -71,10 +75,11 @@ export type CreateLanguageClubEventResult =
       discordScheduledEventId: string | null;
     };
 
-type CreateLanguageClubEventDeps = {
+export type CreateLanguageClubEventDeps = {
   db: SqliteDatabase;
   publisher: LanguageClubDiscordPublisher;
   now?: Date;
+  effectExecutionContext: LanguageClubEffectExecutionContext;
 };
 
 export async function createLanguageClubEvent(
@@ -147,6 +152,47 @@ export async function createLanguageClubEvent(
   );
 
   if (duplicateEvent) {
+    if (duplicateEvent.sourceInteractionId === input.sourceInteractionId) {
+      const repaired = await publishLanguageClubEventEffects({
+        db: deps.db,
+        event: duplicateEvent,
+        publisher: deps.publisher,
+        executionContext: resolveEffectExecutionContext(deps),
+        hostDiscordUserIds: listEventHostSnapshotsByEventId(deps.db, duplicateEvent.id).map((host) => host.discordUserId),
+        now: deps.now ?? new Date(),
+        actorDiscordUserId: input.actorDiscordUserId,
+        allowScheduledEventCreate: !duplicateEvent.discordScheduledEventId,
+        confirmedScheduledEventId: duplicateEvent.discordScheduledEventId ?? undefined
+      });
+      if (repaired.status === "published") {
+        try {
+          createFutureReminderRows(deps.db, {
+            eventId: duplicateEvent.id,
+            announcementChannelId: duplicateEvent.announcementChannelId,
+            languageClubDisplayName: duplicateEvent.languageClubDisplayName ?? languageClub.displayName,
+            scheduledStartAt: duplicateEvent.scheduledStartAt,
+            hostVoiceChannelId: duplicateEvent.hostVoiceChannelId ?? resolvedHostVoiceChannelId,
+            now: deps.now ?? new Date()
+          });
+        } catch (reminderSchedulingError) {
+          operationalLogger.error("language_club_reminder_scheduling_failed", { eventId: duplicateEvent.id, error: reminderSchedulingError });
+        }
+        return {
+          status: "published",
+          eventId: duplicateEvent.id,
+          scheduledStartAt: duplicateEvent.scheduledStartAt,
+          discordScheduledEventId: repaired.scheduledEventId,
+          messageId: repaired.messageId
+        };
+      }
+      return {
+        status: "publish_failed",
+        eventId: duplicateEvent.id,
+        scheduledStartAt: duplicateEvent.scheduledStartAt,
+        reason: repaired.reason,
+        discordScheduledEventId: repaired.scheduledEventId
+      };
+    }
     return hardRejected("Sudah ada event Language Club untuk host channel dan jadwal mulai yang sama.");
   }
 
@@ -237,58 +283,22 @@ export async function createLanguageClubEvent(
     throw new Error("Event draft Language Club belum punya host voice channel yang valid.");
   }
 
-  if (draftedEvent.discordScheduledEventId) {
-    throw new Error("Event draft Language Club ini sudah punya Discord Scheduled Event ID.");
-  }
-
-  let discordScheduledEventId: string | null = null;
-
   try {
-    const scheduledEventResult = await deps.publisher.createScheduledEvent({
-      guildId: draftedEvent.guildId,
-      channelId: draftedEvent.hostVoiceChannelId,
-      title: draftedEvent.title,
-      description: draftedEvent.description,
-      scheduledStartAt: draftedEvent.scheduledStartAt,
-      scheduledEndAt: draftedEvent.scheduledEndAt
+    const effectResult = await publishLanguageClubEventEffects({
+      db: deps.db,
+      event: draftedEvent,
+      publisher: deps.publisher,
+      executionContext: resolveEffectExecutionContext(deps),
+      hostDiscordUserIds: normalizedHostDiscordUserIds,
+      now: new Date(baseNow.getTime() + 2),
+      actorDiscordUserId: input.actorDiscordUserId,
+      allowScheduledEventCreate: true
     });
-
-    discordScheduledEventId = scheduledEventResult.scheduledEventId;
-
-    if (!discordScheduledEventId) {
-      throw new Error("Discord Scheduled Event berhasil dibuat tetapi tidak mengembalikan ID event.");
+    if (effectResult.status !== "published") {
+      throw new LanguageClubPublicationIncompleteError(effectResult.reason, effectResult.scheduledEventId);
     }
-
-    storeLanguageClubEventDiscordScheduledEventId(
-      deps.db,
-      eventId,
-      discordScheduledEventId,
-      new Date(baseNow.getTime() + 2).toISOString()
-    );
-
-    const publishResult = await deps.publisher.publishAnnouncement({
-      channelId: draftedEvent.announcementChannelId,
-      content: buildAnnouncementMessage({
-        languageClubDisplayName: draftedEvent.languageClubDisplayName ?? languageClub.displayName,
-        scheduledStartAt: draftedEvent.scheduledStartAt,
-        timeZone: draftedEvent.timezone,
-        hostVoiceChannelId: draftedEvent.hostVoiceChannelId,
-        hostDiscordUserIds: normalizedHostDiscordUserIds
-      }),
-      allowedUserIds: normalizedHostDiscordUserIds
-    });
     const publishedAtDate = new Date(baseNow.getTime() + 3);
     const publishedAt = publishedAtDate.toISOString();
-
-    markLanguageClubEventPublished(deps.db, eventId, publishedAt, publishResult.messageId, {
-      id: createUuidV7(publishedAtDate),
-      eventId,
-      fromState: "drafted",
-      toState: "published",
-      actorDiscordUserId: input.actorDiscordUserId,
-      occurredAt: publishedAt,
-      reason: "language_club_seeded_publish_success"
-    });
 
     try {
       createFutureReminderRows(deps.db, {
@@ -310,8 +320,8 @@ export async function createLanguageClubEvent(
       status: "published",
       eventId,
       scheduledStartAt: draftedEvent.scheduledStartAt,
-      discordScheduledEventId,
-      messageId: publishResult.messageId
+      discordScheduledEventId: effectResult.scheduledEventId,
+      messageId: effectResult.messageId
     };
   } catch (error) {
     const failureReason = formatErrorMessage(error);
@@ -326,6 +336,10 @@ export async function createLanguageClubEvent(
       actorDiscordUserId: input.actorDiscordUserId,
       occurredAt: failedAt,
       reason: failureReason
+    }, {
+      runtimeLeaseName: resolveEffectExecutionContext(deps).runtimeLeaseName,
+      runtimeOwnerId: resolveEffectExecutionContext(deps).runtimeOwnerId,
+      runtimeFencingToken: resolveEffectExecutionContext(deps).runtimeFencingToken
     });
 
     return {
@@ -333,9 +347,20 @@ export async function createLanguageClubEvent(
       eventId,
       scheduledStartAt: draftedEvent.scheduledStartAt,
       reason: failureReason,
-      discordScheduledEventId
+      discordScheduledEventId: getLanguageClubEventById(deps.db, eventId)?.discordScheduledEventId ?? null
     };
   }
+}
+
+class LanguageClubPublicationIncompleteError extends Error {
+  constructor(message: string, readonly scheduledEventId: string | null) {
+    super(message);
+    this.name = "LanguageClubPublicationIncompleteError";
+  }
+}
+
+function resolveEffectExecutionContext(deps: CreateLanguageClubEventDeps): LanguageClubEffectExecutionContext {
+  return deps.effectExecutionContext;
 }
 
 function hardRejected(reason: string): CreateLanguageClubEventResult {

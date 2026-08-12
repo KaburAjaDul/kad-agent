@@ -40,6 +40,10 @@ export async function registerCommands(
     throw new Error("Live command registration requires --guild-id <snowflake>. Global registration is disabled for this slice.");
   }
 
+  if ((appConfig.runtimeMode ?? "observe") === "observe") {
+    throw new Error("Live command registration is disabled while KADDY_RUNTIME_MODE=observe.");
+  }
+
   if (appConfig.discord.allowedGuildIds.length === 0) {
     throw new Error("DISCORD_ALLOWED_GUILD_IDS is required for live command registration.");
   }

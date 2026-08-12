@@ -2,7 +2,15 @@ export type ReminderType = "event_start" | "t_minus_24h" | "t_minus_1h" | "volun
 
 export type ReminderAudienceKind = "staff" | "volunteer" | "attendee";
 
-export type ReminderState = "pending" | "sending" | "sent" | "cancelled" | "send_failed";
+export type ReminderState =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "cancelled"
+  | "send_failed"
+  | "retryable"
+  | "needs_reconciliation"
+  | "dead_letter";
 
 export type ReminderPayload = {
   targetChannelId?: string;
@@ -23,6 +31,15 @@ export type ReminderJobRecord = {
   payload: ReminderPayload;
   discordMessageId?: string;
   lastAttemptedAt?: string;
+  leaseOwner?: string;
+  leaseExpiresAt?: string;
+  fencingToken?: number;
+  runtimeFencingToken?: number;
+  heartbeatAt?: string;
+  attempts?: number;
+  nextAttemptAt?: string;
+  needsReconciliationAt?: string;
+  deadLetteredAt?: string;
   deliveredAt?: string;
   deliveryError?: string;
   createdAt: string;

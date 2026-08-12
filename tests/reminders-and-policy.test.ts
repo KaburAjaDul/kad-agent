@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { createSqliteConnection } from "../src/app/repo/sqlite.js";
 import { runMigrations } from "../src/app/repo/migrations.js";
+import { acquireRuntimeLease } from "../src/app/repo/runtime-lease-repo.js";
 import { seedFoundationData } from "../src/app/repo/seeds.js";
 import { BackgroundJobRunner } from "../src/app/runtime/job-runner.js";
 import { classifyEventTemplate } from "../src/events/service/classify-event-template.js";
-import { insertReminderJob, listDuePendingReminderJobs } from "../src/events/repo/event-reminder-repo.js";
+import {
+  claimReminderJobLease,
+  insertReminderJob,
+  listDuePendingReminderJobs,
+  markReminderJobSent,
+  resolveReminderJobReconciliation,
+  recoverExpiredSendingReminderJobs
+} from "../src/events/repo/event-reminder-repo.js";
 import { buildReminderJobRecord } from "../src/events/service/reminder-job-factory.js";
 import { deliverDueEventReminders } from "../src/events/service/reminder-delivery-service.js";
 
@@ -32,6 +40,7 @@ describe("event policy classification", () => {
     try {
       runMigrations(db);
       seedFoundationData(db);
+      const runtimeA = acquireRuntimeLease(db, { leaseKey: "test-runtime", ownerId: "worker-a", now: "2026-04-24T11:30:00.000Z", leaseDurationMs: 3_600_000 });
       insertTestEvent(db, "event_1");
       insertTestEvent(db, "event_2");
 
@@ -73,7 +82,7 @@ describe("event policy classification", () => {
             return { messageId: "message-1" };
           }
         },
-        new Date("2026-04-24T11:31:00.000Z")
+        { now: new Date("2026-04-24T11:31:00.000Z"), ownerId: "reminder-delivery", runtimeLeaseName: "test-runtime", runtimeOwnerId: "worker-a", runtimeFencingToken: runtimeA?.fencingToken ?? 0 }
       );
       const concurrentSweep = await deliverDueEventReminders(
         db,
@@ -83,7 +92,7 @@ describe("event policy classification", () => {
             return { messageId: "message-concurrent-duplicate" };
           }
         },
-        new Date("2026-04-24T11:31:30.000Z")
+        { now: new Date("2026-04-24T11:31:30.000Z"), ownerId: "reminder-delivery", runtimeLeaseName: "test-runtime", runtimeOwnerId: "worker-a", runtimeFencingToken: runtimeA?.fencingToken ?? 0 }
       );
       releasePublisher?.();
       const firstSweep = await firstSweepPromise;
@@ -95,7 +104,7 @@ describe("event policy classification", () => {
             return { messageId: "message-repeated-duplicate" };
           }
         },
-        new Date("2026-04-24T11:32:00.000Z")
+        { now: new Date("2026-04-24T11:32:00.000Z"), ownerId: "reminder-delivery", runtimeLeaseName: "test-runtime", runtimeOwnerId: "worker-a", runtimeFencingToken: runtimeA?.fencingToken ?? 0 }
       );
       const rows = db
         .prepare("SELECT id, state, discord_message_id, delivered_at, delivery_error FROM event_reminders ORDER BY id ASC")
@@ -145,6 +154,7 @@ describe("event policy classification", () => {
     try {
       runMigrations(db);
       seedFoundationData(db);
+      const runtime = acquireRuntimeLease(db, { leaseKey: "test-runtime", ownerId: "worker", now: "2026-04-24T11:31:00.000Z", leaseDurationMs: 3_600_000 });
       insertTestEvent(db, "event_redaction");
 
       const reminder = buildReminderJobRecord({
@@ -164,7 +174,7 @@ describe("event policy classification", () => {
             throw new Error(providerError);
           }
         },
-        new Date("2026-04-24T11:31:00.000Z")
+        { now: new Date("2026-04-24T11:31:00.000Z"), ownerId: "reminder-delivery", runtimeLeaseName: "test-runtime", runtimeOwnerId: "worker", runtimeFencingToken: runtime?.fencingToken ?? 0 }
       );
       const row = db
         .prepare("SELECT delivery_error FROM event_reminders WHERE id = ?")
@@ -176,6 +186,83 @@ describe("event policy classification", () => {
       expect(row.delivery_error).not.toContain("private");
       expect(row.delivery_error).not.toContain("123456789012345678");
       expect(row.delivery_error?.length ?? 0).toBeLessThanOrEqual(500);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("moves a late Discord success to reconciliation instead of claiming delivery", async () => {
+    const db = createSqliteConnection(":memory:");
+
+    try {
+      runMigrations(db);
+      seedFoundationData(db);
+      const runtime = acquireRuntimeLease(db, { leaseKey: "test-runtime", ownerId: "worker-a", now: "2026-04-24T11:31:00.000Z", leaseDurationMs: 3_600_000 });
+      insertTestEvent(db, "event_late_success");
+      const reminder = buildReminderJobRecord({
+        eventId: "event_late_success",
+        reminderType: "t_minus_1h",
+        audienceKind: "attendee",
+        scheduledFor: "2026-04-24T11:30:00.000Z",
+        payload: { targetChannelId: "announcement-1" },
+        now: new Date("2026-04-23T10:00:00.000Z")
+      });
+      insertReminderJob(db, reminder);
+
+      const times = [
+        new Date("2026-04-24T11:31:00.000Z"),
+        new Date("2026-04-24T11:31:00.100Z")
+      ];
+      const result = await deliverDueEventReminders(
+        db,
+        { publishReminder: async () => ({ messageId: "message-after-expiry" }) },
+        {
+          now: () => times.shift() ?? new Date("2026-04-24T11:31:00.100Z"),
+          ownerId: "worker-a",
+          runtimeLeaseName: "test-runtime",
+          runtimeOwnerId: "worker-a",
+          runtimeFencingToken: runtime?.fencingToken ?? 0,
+          leaseDurationMs: 50
+        }
+      );
+      const row = db.prepare(
+        "SELECT state, discord_message_id, delivered_at, needs_reconciliation_at FROM event_reminders WHERE id = ?"
+      ).get(reminder.id);
+
+      expect(result).toEqual({ discoveredDueReminders: 1, delivered: 0, failed: 1 });
+      expect(row).toEqual({
+        state: "needs_reconciliation",
+        discord_message_id: "message-after-expiry",
+        delivered_at: null,
+        needs_reconciliation_at: "2026-04-24T11:31:00.100Z"
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("fences a stale reminder finalizer after recovery and takeover", () => {
+    const db = createSqliteConnection(":memory:");
+    try {
+      runMigrations(db);
+      seedFoundationData(db);
+      const runtimeA = acquireRuntimeLease(db, { leaseKey: "test-runtime", ownerId: "worker-a", now: "2026-04-24T11:30:00.000Z", leaseDurationMs: 100 });
+      insertTestEvent(db, "event_fenced_reminder");
+      const reminder = buildReminderJobRecord({
+        eventId: "event_fenced_reminder",
+        reminderType: "event_start",
+        audienceKind: "staff",
+        scheduledFor: "2026-04-24T11:30:00.000Z",
+        payload: { targetChannelId: "announcement-1" },
+        now: new Date("2026-04-23T10:00:00.000Z")
+      });
+      insertReminderJob(db, reminder);
+      const leaseA = claimReminderJobLease(db, reminder.id, "2026-04-24T11:30:00.000Z", { ownerId: "worker-a", runtimeLeaseName: "test-runtime", runtimeOwnerId: "worker-a", runtimeFencingToken: runtimeA?.fencingToken ?? 0, leaseDurationMs: 10_000 });
+      expect(leaseA?.fencingToken).toBe(1);
+      const runtimeB = acquireRuntimeLease(db, { leaseKey: "test-runtime", ownerId: "worker-b", now: "2026-04-24T11:30:00.101Z", leaseDurationMs: 10_000 });
+      expect(runtimeB?.fencingToken).toBe(2);
+      expect(markReminderJobSent(db, reminder.id, "2026-04-24T11:30:00.102Z", "stale", { ownerId: "worker-a", fencingToken: leaseA?.fencingToken ?? 0, runtimeLeaseName: "test-runtime", runtimeOwnerId: "worker-a", runtimeFencingToken: runtimeA?.fencingToken ?? 0 })).toBe(false);
+      expect(markReminderJobSent(db, reminder.id, "2026-04-24T11:30:00.103Z", "stale-b", { ownerId: "worker-a", fencingToken: leaseA?.fencingToken ?? 0, runtimeLeaseName: "test-runtime", runtimeOwnerId: "worker-b", runtimeFencingToken: runtimeB?.fencingToken ?? 0 })).toBe(false);
     } finally {
       db.close();
     }
