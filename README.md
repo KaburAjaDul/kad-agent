@@ -53,11 +53,14 @@ The CI workflow runs those checks and a container build with Node 24 and `npm ci
 ## Container usage
 
 The multi-stage image compiles the app from lockfile-resolved dependencies on
-the supported Node 24 major and runs it as the unprivileged `kad-agent` user.
+the supported Node 24 major and runs it as the unprivileged numeric identity
+`10001:10001`, matching the homelab volume and secret ownership contract.
 `/data` is a persistent volume, and the compiled entrypoint is
-`node dist/index.js`. The base-image digest is intentionally left to a later
-automated image-update policy; treat the current tag as major-pinned, not
-byte-for-byte reproducible.
+`/nodejs/bin/node dist/index.js`. The final distroless runtime base is pinned by
+digest and contains no npm, shell, or package manager. The two build-only
+stages intentionally track the supported `node:24-bookworm-slim` major and do
+not ship in the release image; rotating either builder tag or runtime digest is
+an explicit release-maintenance task.
 
 ```sh
 docker build -t <image-name>:<tag> .

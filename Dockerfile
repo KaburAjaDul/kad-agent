@@ -13,7 +13,7 @@ COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:24-bookworm-slim AS runtime
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:f987682b3ea8d8e22497cb95edc5014d793612f7064e43df8104394db0ce19fe AS runtime
 
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/kad-agent.sqlite
@@ -21,18 +21,19 @@ ENV HEALTH_HOST=127.0.0.1
 ENV HEALTH_PORT=3000
 WORKDIR /app
 
-RUN groupadd --system --gid 10001 kad-agent \
-  && useradd --system --uid 10001 --gid 10001 --home-dir /app --no-create-home kad-agent \
-  && mkdir -p /data \
-  && chown -R kad-agent:kad-agent /app /data
+COPY --from=dependencies --chown=10001:10001 /app/node_modules ./node_modules
+COPY --from=build --chown=10001:10001 /app/dist ./dist
 
-COPY --from=dependencies --chown=kad-agent:kad-agent /app/node_modules ./node_modules
-COPY --from=build --chown=kad-agent:kad-agent /app/dist ./dist
+# Distroless has no package manager or shell. Use its own Node binary once at
+# build time (as root) to provision the persistent directory for the numeric
+# runtime UID; the final image configuration remains non-root.
+USER 0
+RUN ["/nodejs/bin/node", "-e", "const fs = require('node:fs'); fs.mkdirSync('/data', { recursive: true }); fs.chownSync('/data', 10001, 10001)"]
 
 VOLUME ["/data"]
 EXPOSE 3000
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.HEALTH_PORT || '3000') + '/readyz').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]
-USER kad-agent
-ENTRYPOINT ["node", "dist/index.js"]
+  CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:' + (process.env.HEALTH_PORT || '3000') + '/readyz').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]
+USER 10001:10001
+ENTRYPOINT ["/nodejs/bin/node", "dist/index.js"]

@@ -19,6 +19,7 @@ describe("release and runtime supply-chain contracts", () => {
     expect(ci).toContain("Config.Healthcheck.Test");
     expect(ci).toContain("/readyz");
     expect(ci).toContain("Config.User");
+    expect(ci).toContain('= "10001:10001"');
     expect(ci).toContain("--init");
     expect(ci).toContain("--tmpfs /data");
   });
@@ -51,6 +52,7 @@ describe("release and runtime supply-chain contracts", () => {
     expect(release).toContain('docker pull --platform linux/amd64 "$IMAGE_REF"');
     expect(release).toContain('docker run --rm --platform linux/amd64 --init');
     expect(release).toContain('Config.Healthcheck.Test');
+    expect(release).toContain('= "10001:10001"');
     expect(release).toContain("image-digest.json");
     expect(release).toContain("actions/attest-sbom@");
     expect(release).toContain("actions/attest-build-provenance@");
@@ -76,12 +78,24 @@ describe("release and runtime supply-chain contracts", () => {
 
   it("keeps the runtime image Node 24, non-root, persistent, healthy, and signal-correct", () => {
     const dockerfile = read("Dockerfile");
-    expect(dockerfile).toMatch(/FROM node:24-/g);
-    expect(dockerfile).toContain("USER kad-agent");
+    expect(dockerfile).toContain(
+      "FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:f987682b3ea8d8e22497cb95edc5014d793612f7064e43df8104394db0ce19fe AS runtime"
+    );
+    expect(dockerfile).toContain("USER 10001:10001");
+    expect(dockerfile).toContain("fs.mkdirSync('/data'");
+    expect(dockerfile).toContain("fs.chownSync('/data', 10001, 10001)");
     expect(dockerfile).toContain('VOLUME ["/data"]');
     expect(dockerfile).toContain("HEALTHCHECK");
     expect(dockerfile).toContain("/readyz");
     expect(dockerfile).toContain("STOPSIGNAL SIGTERM");
-    expect(dockerfile).toContain('ENTRYPOINT ["node", "dist/index.js"]');
+    expect(dockerfile).toContain('CMD ["/nodejs/bin/node", "-e"');
+    expect(dockerfile).toContain('ENTRYPOINT ["/nodejs/bin/node", "dist/index.js"]');
+
+    const runtime = dockerfile.slice(dockerfile.indexOf(" AS runtime"));
+    expect(runtime).toContain("COPY --from=dependencies --chown=10001:10001 /app/node_modules ./node_modules");
+    expect(runtime).toContain("COPY --from=build --chown=10001:10001 /app/dist ./dist");
+    expect(runtime).not.toMatch(/\b(?:npm|npx|corepack|apt(?:-get)?|apk|groupadd|useradd)\b/i);
+    expect(runtime).not.toMatch(/\/bin\/(?:ba)?sh\b/);
+    expect(runtime).not.toContain("node:24-");
   });
 });

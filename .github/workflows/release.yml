@@ -68,7 +68,7 @@ jobs:
           IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
         run: |
           docker pull --platform linux/amd64 "$IMAGE_REF"
-          test "$(docker image inspect "$IMAGE_REF" --format '{{.Config.User}}')" = "kad-agent"
+          test "$(docker image inspect "$IMAGE_REF" --format '{{.Config.User}}')" = "10001:10001"
           docker image inspect "$IMAGE_REF" --format '{{json .Config.Healthcheck.Test}}' | grep -F '/readyz'
           docker run --rm --platform linux/amd64 --init \
             --env BOT_DRY_RUN=true \
