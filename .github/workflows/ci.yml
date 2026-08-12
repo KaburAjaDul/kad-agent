@@ -54,6 +54,6 @@ jobs:
 
       - name: Smoke runtime container as non-root
         run: |
-          test "$(docker image inspect kad-agent:ci --format '{{.Config.User}}')" = "kad-agent"
+          test "$(docker image inspect kad-agent:ci --format '{{.Config.User}}')" = "10001:10001"
           docker image inspect kad-agent:ci --format '{{json .Config.Healthcheck.Test}}' | grep -F '/readyz'
           docker run --rm --init --env BOT_DRY_RUN=true --tmpfs /data:uid=10001,gid=10001 kad-agent:ci --dry-run
