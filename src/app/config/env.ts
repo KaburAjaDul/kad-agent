@@ -46,7 +46,8 @@ const envSchema = z.object({
   DISCORD_ALLOWED_GUILD_IDS: z.string().optional(),
   DISCORD_APP_ID_FILE: z.string().trim().min(1).optional(),
   DISCORD_BOT_TOKEN_FILE: z.string().trim().min(1).optional(),
-  DISCORD_ALLOWED_GUILD_IDS_FILE: z.string().trim().min(1).optional()
+  DISCORD_ALLOWED_GUILD_IDS_FILE: z.string().trim().min(1).optional(),
+  DISCORD_TARGET_GUILD_ID_FILE: z.string().trim().min(1).optional()
 });
 
 export type AppConfig = {
@@ -124,6 +125,7 @@ export function loadAppConfig(options: LoadAppConfigOptions = {}): AppConfig {
     botToken: resolveSecretSource("DISCORD_BOT_TOKEN", parsed.DISCORD_BOT_TOKEN, parsed.DISCORD_BOT_TOKEN_FILE),
     allowedGuildIds: parseAllowedGuildIds(resolveSecretSource("DISCORD_ALLOWED_GUILD_IDS", parsed.DISCORD_ALLOWED_GUILD_IDS, parsed.DISCORD_ALLOWED_GUILD_IDS_FILE))
   };
+  const targetGuildId = resolveTargetGuildId(parsed.DISCORD_TARGET_GUILD_ID, parsed.DISCORD_TARGET_GUILD_ID_FILE);
 
   if (requireDiscord) {
     if (!discord.appId) {
@@ -139,7 +141,7 @@ export function loadAppConfig(options: LoadAppConfigOptions = {}): AppConfig {
     }
   }
 
-  const publication = loadPublicationRuntimeConfig(parsed, options.cwd ?? process.cwd());
+  const publication = loadPublicationRuntimeConfig(parsed, options.cwd ?? process.cwd(), targetGuildId);
   if (publication.mode === "active" && parsed.KADDY_RUNTIME_MODE !== "operate") {
     throw new Error("KADDY_RUNTIME_MODE=operate is required for active publication.");
   }
@@ -174,10 +176,11 @@ export function loadAppConfig(options: LoadAppConfigOptions = {}): AppConfig {
 
 function loadPublicationRuntimeConfig(
   parsed: z.infer<typeof envSchema>,
-  cwd: string
+  cwd: string,
+  resolvedTargetGuildId: string | undefined
 ): PublicationRuntimeConfig {
   const mode = parsed.KADDY_PUBLICATION_MODE;
-  const targetGuildId = emptyToUndefined(parsed.DISCORD_TARGET_GUILD_ID);
+  const targetGuildId = resolvedTargetGuildId;
   const targetGuildName = emptyToUndefined(parsed.DISCORD_TARGET_GUILD_NAME);
   const endpoint = emptyToUndefined(parsed.KAD_PROJECTION_ENDPOINT);
   const publicAgendaEndpoint = emptyToUndefined(parsed.KAD_PUBLIC_AGENDA_ENDPOINT);
@@ -301,6 +304,21 @@ export function parseAllowedGuildIds(value: string | undefined): string[] {
   }
 
   return [...new Set(ids)];
+}
+
+function resolveTargetGuildId(value: string | undefined, filePath: string | undefined): string | undefined {
+  const directValue = emptyToUndefined(value);
+  const directFilePath = emptyToUndefined(filePath);
+  if (directValue && directFilePath) {
+    throw new Error("DISCORD_TARGET_GUILD_ID and DISCORD_TARGET_GUILD_ID_FILE cannot both be set.");
+  }
+  if (!directFilePath) return directValue;
+
+  const fileValue = resolveSecretSource("DISCORD_TARGET_GUILD_ID", undefined, directFilePath);
+  if (!fileValue || !/^\d{17,20}$/.test(fileValue)) {
+    throw new Error("DISCORD_TARGET_GUILD_ID_FILE must contain exactly one Discord snowflake ID.");
+  }
+  return fileValue;
 }
 
 function emptyToUndefined(value: string | undefined): string | undefined {
