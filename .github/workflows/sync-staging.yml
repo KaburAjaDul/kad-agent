@@ -14,7 +14,10 @@ concurrency:
 
 jobs:
   sync:
-    if: github.ref == 'refs/heads/main'
+    # Keep the legacy projector authoritative until the homelab runtime has
+    # passed its signed canary. The root-owned cutover flips this repository
+    # variable once; it prevents scheduled and manual dual-writer races.
+    if: github.ref == 'refs/heads/main' && vars.KADDY_RUNTIME_PUBLICATION_ACTIVE != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: Staging

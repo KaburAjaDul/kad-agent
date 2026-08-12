@@ -44,6 +44,14 @@ describe("Discord scheduled event observation reconciliation", () => {
     expect(second.observed).toBe(1);
     expect(db.prepare("SELECT COUNT(*) AS count FROM discord_scheduled_event_observation_history").get()).toMatchObject({ count: 1 });
     expect(db.prepare("SELECT last_observed_at FROM discord_scheduled_event_observations_current").get()).toMatchObject({ last_observed_at: "2026-08-12T10:00:30.000Z" });
+    expect(db.prepare("SELECT agenda_state, updated_at FROM private_agenda_entries").get()).toEqual({
+      agenda_state: "approved",
+      updated_at: "2026-08-12T10:00:01.000Z"
+    });
+    expect(db.prepare("SELECT state, decided_at FROM publication_approvals").get()).toEqual({
+      state: "approved",
+      decided_at: "2026-08-12T09:30:00.000Z"
+    });
 
     reconcileDiscordScheduledEventObservations({
       db,

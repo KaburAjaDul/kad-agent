@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAppConfig } from "../src/app/config/env.js";
@@ -20,6 +21,58 @@ describe("Kaddy runtime mode and observability", () => {
     });
     expect(config.runtimeMode).toBe("observe");
     expect(config.runtimeLease?.durationMs).toBe(30_000);
+    expect(config.publication?.mode).toBe("disabled");
+  });
+
+  it("requires an explicit cutover and file-backed Ed25519 material for active publication", () => {
+    const directory = mkdtempSync(join(tmpdir(), "kaddy-publication-config-"));
+    const privateKeyFile = join(directory, "projection-private.pem");
+    const publicIdKeyFile = join(directory, "public-id.key");
+    const { privateKey } = generateKeyPairSync("ed25519");
+    writeFileSync(privateKeyFile, privateKey.export({ format: "pem", type: "pkcs8" }));
+    writeFileSync(publicIdKeyFile, "0123456789abcdef0123456789abcdef");
+    const base = {
+      NODE_ENV: "test",
+      BOT_DRY_RUN: "false",
+      DISCORD_APP_ID: "123456789012345678",
+      DISCORD_BOT_TOKEN: "token",
+      DISCORD_ALLOWED_GUILD_IDS: "123456789012345678",
+      KADDY_RUNTIME_MODE: "operate",
+      KADDY_PUBLICATION_MODE: "active",
+      DISCORD_TARGET_GUILD_ID: "123456789012345678",
+      DISCORD_TARGET_GUILD_NAME: "Kabur Aja Dulu",
+      KAD_PROJECTION_ENDPOINT: "https://staging.example.test/internal/v1/projections/agenda",
+      KAD_PUBLIC_AGENDA_ENDPOINT: "https://staging.example.test/api/v1/agenda",
+      KAD_PROJECTION_KEY_ID: "staging-key",
+      KAD_PROJECTION_SIGNING_PRIVATE_KEY_FILE: privateKeyFile,
+      KAD_PUBLIC_ID_KEY_FILE: publicIdKeyFile
+    };
+    try {
+      expect(() => loadAppConfig({ env: base, loadEnvFile: false })).toThrow("CUTOVER_CONFIRMED");
+      const config = loadAppConfig({ env: { ...base, KADDY_PUBLICATION_CUTOVER_CONFIRMED: "true" }, loadEnvFile: false });
+      expect(config.publication?.mode).toBe("active");
+      expect(config.publication?.publicAgendaEndpoint).toBe("https://staging.example.test/api/v1/agenda");
+      expect(config.publication?.signingPrivateKeyFile).toBe(privateKeyFile);
+      expect(config.publication?.signingPrivateKey).toContain("BEGIN PRIVATE KEY");
+      expect(config.publication?.publicIdKey).toHaveLength(32);
+      expect(() => loadAppConfig({ env: { ...base, KADDY_PUBLICATION_CUTOVER_CONFIRMED: "true", KAD_PROJECTION_SIGNING_PRIVATE_KEY: "inline" }, loadEnvFile: false })).toThrow("*_FILE");
+      expect(() => loadAppConfig({ env: { ...base, KADDY_PUBLICATION_CUTOVER_CONFIRMED: "true", KAD_PROJECTION_ENDPOINT: "http://staging.example.test" }, loadEnvFile: false })).toThrow("HTTPS");
+      expect(() => loadAppConfig({ env: { ...base, KADDY_PUBLICATION_CUTOVER_CONFIRMED: "true", KAD_PROJECTION_ENDPOINT: "https://staging.example.test/wrong" }, loadEnvFile: false })).toThrow("exact");
+      expect(() => loadAppConfig({ env: { ...base, KADDY_PUBLICATION_CUTOVER_CONFIRMED: "true", KAD_PUBLIC_AGENDA_ENDPOINT: "https://staging.example.test/api/v1/agenda?private=true" }, loadEnvFile: false })).toThrow("exact");
+      expect(() => loadAppConfig({ env: { ...base, KADDY_PUBLICATION_CUTOVER_CONFIRMED: "true", KAD_PUBLIC_AGENDA_ENDPOINT: "https://other.example.test/api/v1/agenda" }, loadEnvFile: false })).toThrow("share one HTTPS origin");
+      const shadow = loadAppConfig({ env: {
+        ...base,
+        KADDY_RUNTIME_MODE: "observe",
+        KADDY_PUBLICATION_MODE: "observe",
+        KADDY_PUBLICATION_CUTOVER_CONFIRMED: "false",
+        KAD_PROJECTION_SIGNING_PRIVATE_KEY_FILE: undefined,
+        KAD_PROJECTION_KEY_ID: undefined
+      }, loadEnvFile: false });
+      expect(shadow.publication).toMatchObject({ mode: "observe", publicIdKey: "0123456789abcdef0123456789abcdef" });
+      expect(shadow.publication?.signingPrivateKey).toBeUndefined();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("supports file-backed Discord configuration and rejects ambiguous sources", () => {
@@ -105,6 +158,34 @@ describe("Kaddy runtime mode and observability", () => {
     }
   });
 
+  it("runs observation without ever invoking a dispatch callback", async () => {
+    const db = createSqliteConnection(":memory:");
+    try {
+      runMigrations(db);
+      const metrics = createOperationalMetrics();
+      let dispatched = false;
+      const runner = new BackgroundJobRunner(db, {
+        mode: "observe",
+        publicationMode: "observe",
+        metrics,
+        publication: {
+          reconcile: async () => ({ reconciliationOutcome: "success", revision: 7 }),
+          dispatch: async () => {
+            dispatched = true;
+            return { outcome: "success" };
+          }
+        }
+      });
+      const result = await runner.runPublicationSweep(new Date("2026-01-01T00:00:00.000Z"));
+      expect(result).toMatchObject({ mode: "observe", observed: true, dispatched: false, publicationOutcome: "skipped" });
+      expect(dispatched).toBe(false);
+      expect(metrics.renderPrometheus()).toContain("kaddy_public_projection_revision 7");
+      expect(metrics.renderPrometheus()).toContain("kaddy_publication_observation_status{status=\"succeeded\"} 1");
+    } finally {
+      db.close();
+    }
+  });
+
   it("refreshes DB-backed queue, reconciliation, storage, and timestamp gauges", () => {
     const db = createSqliteConnection(":memory:");
     try {
@@ -118,6 +199,7 @@ describe("Kaddy runtime mode and observability", () => {
       const body = metrics.renderPrometheus();
       expect(body).toContain("kaddy_reminder_queue_oldest_due_age_seconds 120");
       expect(body).toContain("kaddy_reconciliation_backlog 1");
+      expect(body).toContain("kaddy_publication_mode{mode=\"disabled\"} 1");
       expect(body).toMatch(/kaddy_sqlite_logical_bytes [1-9]\d*/);
       expect(body).toContain("kaddy_metrics_refresh_timestamp_seconds 1767225660");
       expect(body).not.toContain("r1");

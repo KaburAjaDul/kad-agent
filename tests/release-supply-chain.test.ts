@@ -76,6 +76,21 @@ describe("release and runtime supply-chain contracts", () => {
     }
   });
 
+  it("keeps the legacy staging writer fenced off after runtime cutover", () => {
+    const sync = read(".github/workflows/sync-staging.yml");
+    expect(sync).toContain("vars.KADDY_RUNTIME_PUBLICATION_ACTIVE != 'true'");
+  });
+
+  it("keeps REST publication reconciliation independent of Gateway readiness", () => {
+    const bootstrap = read("src/app/runtime/bootstrap.ts");
+    const publicationLoop = bootstrap.slice(
+      bootstrap.indexOf("const publicationIntervalHandle"),
+      bootstrap.indexOf("shutdown = createGracefulShutdown")
+    );
+    expect(publicationLoop).toContain("!leaseValid");
+    expect(publicationLoop).not.toContain("discordRuntime.isReady()");
+  });
+
   it("keeps the runtime image Node 24, non-root, persistent, healthy, and signal-correct", () => {
     const dockerfile = read("Dockerfile");
     expect(dockerfile).toContain(

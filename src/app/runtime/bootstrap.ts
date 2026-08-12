@@ -5,13 +5,18 @@ import { seedFoundationData } from "../repo/seeds.js";
 import { createSqliteConnection } from "../repo/sqlite.js";
 import { acquireRuntimeLease, releaseRuntimeLease, renewRuntimeLease, type RuntimeLease } from "../repo/runtime-lease-repo.js";
 import { randomUUID } from "node:crypto";
-import { BackgroundJobRunner } from "./job-runner.js";
+import { BackgroundJobRunner, type PublicationJob } from "./job-runner.js";
 import { startDiscordRuntime } from "../../discord/runtime/start-discord-runtime.js";
 import { startHealthServer, type HealthServer } from "./health-server.js";
 import { createOperationalMetrics } from "./operational-metrics.js";
+import { createPublicationRuntime } from "../../publication/publication-runtime.js";
+import type { PublicationOperatorDependencies } from "../../publication/publication-operator-adapter.js";
 
 export type ApplicationRuntimeOptions = {
   failStop?: (code: number) => void;
+  /** Optional publication implementation; runtime policy remains here. */
+  publication?: PublicationJob;
+  publicationOperator?: PublicationOperatorDependencies;
 };
 
 export async function startApplication(
@@ -20,6 +25,7 @@ export async function startApplication(
 ): Promise<void> {
   const logger = createOperationalLogger({ level: appConfig.logLevel });
   const metrics = createOperationalMetrics({ databasePath: appConfig.databasePath });
+  metrics.setPublicationMode(appConfig.botDryRun ? "disabled" : (appConfig.publication?.mode ?? "disabled"));
   const db = createSqliteConnection(appConfig.databasePath);
   let healthServer: HealthServer | undefined;
 
@@ -32,7 +38,14 @@ export async function startApplication(
     let jobRunner: BackgroundJobRunner;
 
     if (appConfig.botDryRun) {
-      jobRunner = new BackgroundJobRunner(db, { mode: "operate", metrics, isLeaseValid: () => leaseValid });
+      jobRunner = new BackgroundJobRunner(db, {
+        mode: "operate",
+        metrics,
+        isLeaseValid: () => leaseValid,
+        // Dry-run is a hard publication stop, regardless of an accidentally
+        // supplied publication implementation or configuration.
+        publicationMode: "disabled"
+      });
       const reminderSweep = jobRunner.runReminderSweep();
       healthServer.setReady(true);
 
@@ -60,6 +73,21 @@ export async function startApplication(
       throw new Error("Kaddy runtime lease is already held by another owner.");
     }
     metrics.setLeaseState("held");
+    const runtimeLeaseContext = {
+      runtimeLeaseName: lease.leaseKey,
+      runtimeOwnerId: lease.ownerId,
+      runtimeFencingToken: lease.fencingToken
+    };
+    const defaultPublicationRuntime = runtimeOptions.publication
+      ? undefined
+      : createPublicationRuntime({
+          db,
+          appConfig,
+          context: runtimeLeaseContext,
+          isLeaseValid: () => leaseValid
+        });
+    const publicationJob = runtimeOptions.publication ?? defaultPublicationRuntime?.job;
+    const publicationOperator = runtimeOptions.publicationOperator ?? defaultPublicationRuntime?.operator;
     jobRunner = new BackgroundJobRunner(db, {
       mode: appConfig.runtimeMode ?? "observe",
       metrics,
@@ -69,7 +97,12 @@ export async function startApplication(
       runtimeOwnerId: lease.ownerId,
       runtimeFencingToken: lease.fencingToken,
       leaseDurationMs: appConfig.runtimeLease?.durationMs ?? 30_000,
-      heartbeatIntervalMs: appConfig.runtimeLease?.heartbeatIntervalMs ?? 10_000
+      heartbeatIntervalMs: appConfig.runtimeLease?.heartbeatIntervalMs ?? 10_000,
+      publicationMode: appConfig.publication?.mode ?? "disabled",
+      publication: publicationJob,
+      publicationRequestTimeoutMs: appConfig.publication?.requestTimeoutMs,
+      publicationLeaseDurationMs: appConfig.publication?.leaseDurationMs,
+      publicationLeaseHeartbeatIntervalMs: appConfig.publication?.leaseHeartbeatIntervalMs
     });
     let discordRuntime: Awaited<ReturnType<typeof startDiscordRuntime>>;
     let shutdown: (() => Promise<void>) | undefined;
@@ -106,6 +139,7 @@ export async function startApplication(
         startDiscordRuntime(appConfig, db, {
           lease,
           metrics,
+          publicationOperator,
           onReadinessChange: (ready) => healthServer?.setReady(ready && leaseValid)
         }),
         appConfig.startupTimeoutMs ?? 30_000,
@@ -117,6 +151,7 @@ export async function startApplication(
       throw error;
     }
     let inFlightSweep: Promise<unknown> | undefined;
+    let inFlightPublicationSweep: Promise<unknown> | undefined;
 
     const intervalHandle = setInterval(() => {
       if (inFlightSweep || !leaseValid || !discordRuntime.isReady()) {
@@ -136,11 +171,36 @@ export async function startApplication(
       inFlightSweep = trackedSweep;
     }, appConfig.jobPollIntervalMs);
 
+    const publicationIntervalHandle = publicationJob
+      && (appConfig.publication?.mode ?? "disabled") !== "disabled"
+      ? setInterval(() => {
+        // Publication observation uses authenticated Discord REST and the
+        // signed projection endpoint. It must continue reconciling public
+        // withdrawals even while the Gateway session is reconnecting.
+        if (inFlightPublicationSweep || !leaseValid) return;
+        const publicationSweep = jobRunner
+          .runPublicationSweep()
+          .catch((error: unknown) => {
+            logger.error("publication_sweep_failed", { error });
+          });
+        const trackedPublicationSweep = publicationSweep.finally(() => {
+          if (inFlightPublicationSweep === trackedPublicationSweep) {
+            inFlightPublicationSweep = undefined;
+          }
+        });
+        inFlightPublicationSweep = trackedPublicationSweep;
+      }, publicationIntervalMs(appConfig))
+      : undefined;
+
     shutdown = createGracefulShutdown({
       markNotReady: () => healthServer?.setReady(false),
-      clearInterval: () => clearInterval(intervalHandle),
+      clearInterval: () => {
+        clearInterval(intervalHandle);
+        if (publicationIntervalHandle) clearInterval(publicationIntervalHandle);
+      },
       waitForInFlightSweep: async () => {
         await inFlightSweep;
+        await inFlightPublicationSweep;
       },
       destroyDiscord: discordRuntime.destroy,
       releaseLease: () => {
@@ -231,6 +291,12 @@ export function createLeaseLossFailStopHandler(deps: {
       })
       .finally(() => deps.failStop(1));
   };
+}
+
+function publicationIntervalMs(appConfig: AppConfig): number {
+  const publication = appConfig.publication;
+  if (!publication || publication.mode === "disabled") return appConfig.jobPollIntervalMs;
+  return publication.mode === "active" ? publication.publishIntervalMs : publication.observationIntervalMs;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

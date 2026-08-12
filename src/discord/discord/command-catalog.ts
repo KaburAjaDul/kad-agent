@@ -11,6 +11,43 @@ export const foundationCommands = [
     .setDMPermission(false)
     .toJSON(),
   new SlashCommandBuilder()
+    .setName("publication")
+    .setDescription("Review private event data before it can appear on the public agenda.")
+    .setDMPermission(false)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("pending").setDescription("List the current private publication reviews.")
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("decide")
+        .setDescription("Approve or reject one item from the current review list.")
+        .addIntegerOption((option) =>
+          option
+            .setName("item")
+            .setDescription("Number from the current /publication pending list.")
+            .setMinValue(1)
+            .setMaxValue(20)
+            .setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("decision")
+            .setDescription("Whether this current event is safe to publish.")
+            .addChoices({ name: "approve", value: "approve" }, { name: "reject", value: "reject" })
+            .setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("reason")
+            .setDescription("Short audit reason; never include secrets.")
+            .setMinLength(1)
+            .setMaxLength(1000)
+            .setRequired(true)
+        )
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName("event")
     .setDescription("Event operations commands for staff.")
     .setDMPermission(false)
