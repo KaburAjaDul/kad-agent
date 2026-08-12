@@ -42,8 +42,11 @@ describe("release and runtime supply-chain contracts", () => {
     expect(release).toContain("IMAGE_NAME: ghcr.io/kaburajadul/kad-agent");
     expect(release).toContain("IMAGE_TAG: sha-${{ github.event.workflow_run.head_sha }}");
     expect(release).toContain("platforms: linux/amd64");
+    expect(release).toContain("org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}");
+    expect(release).toContain("org.opencontainers.image.source=https://github.com/${{ github.repository }}");
     expect(release).toContain("id: build");
     expect(release).toContain("steps.build.outputs.digest");
+    expect(release).not.toContain("push-by-digest=true");
     expect(release).toContain('echo "digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"');
     expect(release).toContain('docker pull --platform linux/amd64 "$IMAGE_REF"');
     expect(release).toContain('docker run --rm --platform linux/amd64 --init');
