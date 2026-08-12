@@ -557,6 +557,137 @@ CREATE INDEX IF NOT EXISTS idx_event_reminders_retry_due
   ON event_reminders(state, next_attempt_at);
 `;
 
+const DISCORD_OBSERVATION_AND_PROJECTION_MIGRATION_SQL = `
+CREATE TABLE IF NOT EXISTS discord_scheduled_event_observation_history (
+  id TEXT PRIMARY KEY,
+  provider_event_id TEXT NOT NULL,
+  guild_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source = 'discord_rest_reconciliation'),
+  source_version INTEGER NOT NULL CHECK (source_version = 1),
+  observation_state TEXT NOT NULL CHECK (observation_state IN ('present', 'disappeared', 'tombstoned')),
+  status_code INTEGER NOT NULL CHECK (status_code BETWEEN 1 AND 4),
+  entity_type INTEGER CHECK (entity_type IS NULL OR entity_type IN (2, 3)),
+  privacy_level INTEGER CHECK (privacy_level IS NULL OR privacy_level = 2),
+  normalized_title TEXT,
+  classification_state TEXT NOT NULL CHECK (classification_state IN ('allowlisted', 'unknown', 'invalid', 'withdrawn')),
+  classification_category TEXT,
+  program_key TEXT,
+  series_key TEXT,
+  scheduled_start_at TEXT,
+  scheduled_end_at TEXT,
+  reason_code TEXT NOT NULL,
+  observation_fingerprint TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_discord_observation_history_source_identity
+  ON discord_scheduled_event_observation_history(id, provider_event_id, guild_id);
+
+CREATE TABLE IF NOT EXISTS discord_scheduled_event_observations_current (
+  provider_event_id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  observation_id TEXT NOT NULL,
+  first_observed_at TEXT NOT NULL,
+  last_observed_at TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source = 'discord_rest_reconciliation'),
+  source_version INTEGER NOT NULL CHECK (source_version = 1),
+  observation_state TEXT NOT NULL CHECK (observation_state IN ('present', 'disappeared', 'tombstoned')),
+  status_code INTEGER NOT NULL CHECK (status_code BETWEEN 1 AND 4),
+  entity_type INTEGER CHECK (entity_type IS NULL OR entity_type IN (2, 3)),
+  privacy_level INTEGER CHECK (privacy_level IS NULL OR privacy_level = 2),
+  normalized_title TEXT,
+  classification_state TEXT NOT NULL CHECK (classification_state IN ('allowlisted', 'unknown', 'invalid', 'withdrawn')),
+  classification_category TEXT,
+  program_key TEXT,
+  series_key TEXT,
+  scheduled_start_at TEXT,
+  scheduled_end_at TEXT,
+  reason_code TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (observation_id, provider_event_id, guild_id)
+    REFERENCES discord_scheduled_event_observation_history(id, provider_event_id, guild_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_discord_observation_history_guild_time
+  ON discord_scheduled_event_observation_history(guild_id, observed_at);
+CREATE INDEX IF NOT EXISTS idx_discord_observation_current_state
+  ON discord_scheduled_event_observations_current(guild_id, observation_state, classification_state);
+
+CREATE TABLE IF NOT EXISTS private_agenda_entries (
+  id TEXT PRIMARY KEY,
+  source_provider_event_id TEXT NOT NULL,
+  source_observation_id TEXT NOT NULL,
+  guild_id TEXT NOT NULL,
+  projection_type TEXT NOT NULL CHECK (projection_type = 'language_club_agenda_entry.v1'),
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  program_key TEXT NOT NULL,
+  series_key TEXT,
+  scheduled_start_at TEXT NOT NULL,
+  scheduled_end_at TEXT,
+  timezone TEXT NOT NULL CHECK (timezone = 'Asia/Jakarta'),
+  agenda_state TEXT NOT NULL CHECK (agenda_state IN ('pending', 'approved', 'withdrawn')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (source_provider_event_id, projection_type),
+  FOREIGN KEY (source_observation_id, source_provider_event_id, guild_id)
+    REFERENCES discord_scheduled_event_observation_history(id, provider_event_id, guild_id)
+);
+
+CREATE TABLE IF NOT EXISTS publication_approvals (
+  id TEXT PRIMARY KEY,
+  agenda_entry_id TEXT NOT NULL,
+  projection_type TEXT NOT NULL CHECK (projection_type = 'language_club_agenda_entry.v1'),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'rejected', 'withdrawn')),
+  requested_at TEXT NOT NULL,
+  requested_by TEXT,
+  decided_at TEXT,
+  decided_by TEXT,
+  decision_reason TEXT,
+  FOREIGN KEY (agenda_entry_id) REFERENCES private_agenda_entries(id),
+  UNIQUE (agenda_entry_id, projection_type)
+);
+
+CREATE TABLE IF NOT EXISTS public_projection_outbox (
+  id TEXT PRIMARY KEY,
+  projection_type TEXT NOT NULL CHECK (projection_type = 'language_club_agenda_entry.v1'),
+  agenda_entry_id TEXT NOT NULL,
+  projection_revision INTEGER NOT NULL CHECK (projection_revision >= 0),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'published', 'failed', 'withdrawn')),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  published_at TEXT,
+  last_error TEXT,
+  FOREIGN KEY (agenda_entry_id) REFERENCES private_agenda_entries(id),
+  UNIQUE (projection_type, agenda_entry_id, projection_revision)
+);
+
+CREATE TABLE IF NOT EXISTS public_projection_revisions (
+  projection_type TEXT PRIMARY KEY CHECK (projection_type = 'language_club_agenda_entry.v1'),
+  current_revision INTEGER NOT NULL DEFAULT 0 CHECK (current_revision >= 0),
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public_projection_checkpoints (
+  checkpoint_key TEXT PRIMARY KEY,
+  projection_type TEXT NOT NULL CHECK (projection_type = 'language_club_agenda_entry.v1'),
+  last_revision INTEGER NOT NULL DEFAULT 0 CHECK (last_revision >= 0),
+  last_observation_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public_projection_tombstones (
+  projection_type TEXT NOT NULL CHECK (projection_type = 'language_club_agenda_entry.v1'),
+  public_entry_id TEXT NOT NULL,
+  projection_revision INTEGER NOT NULL CHECK (projection_revision >= 0),
+  reason_code TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (projection_type, public_entry_id)
+);
+`;
+
 const migrations: Migration[] = [
   {
     id: "0001_foundation",
@@ -585,6 +716,10 @@ const migrations: Migration[] = [
   {
     id: "0007_runtime_durability",
     sql: RUNTIME_DURABILITY_MIGRATION_SQL
+  },
+  {
+    id: "0008_discord_observations_and_projection",
+    sql: DISCORD_OBSERVATION_AND_PROJECTION_MIGRATION_SQL
   }
 ];
 

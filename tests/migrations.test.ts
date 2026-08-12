@@ -99,7 +99,8 @@ describe("foundation database", () => {
         "0004_event_slice_e1_5_host_snapshot",
         "0005_event_slice_e2_assigned_language_clubs",
         "0006_event_slice_e2_reminder_delivery",
-        "0007_runtime_durability"
+        "0007_runtime_durability",
+        "0008_discord_observations_and_projection"
       ]);
       expect(insertedSeedRows).toBe(1);
       expect(tableNames).toEqual(
@@ -118,6 +119,14 @@ describe("foundation database", () => {
           "language_club_staff_roles",
           "runtime_leases",
           "external_effect_intents",
+          "discord_scheduled_event_observation_history",
+          "discord_scheduled_event_observations_current",
+          "private_agenda_entries",
+          "publication_approvals",
+          "public_projection_outbox",
+          "public_projection_revisions",
+          "public_projection_checkpoints",
+          "public_projection_tombstones",
           "schema_migrations"
         ])
       );
@@ -544,6 +553,37 @@ describe("foundation database", () => {
           "2026-04-23T10:10:00.000Z"
         )
       ).toThrow(/NOT NULL/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("enforces observation source integrity at the SQLite boundary", () => {
+    const db = createSqliteConnection(":memory:");
+    try {
+      runMigrations(db);
+      expect(() => db.prepare(
+        `INSERT INTO discord_scheduled_event_observation_history (
+          id, provider_event_id, guild_id, observed_at, source, source_version,
+          observation_state, status_code, entity_type, privacy_level,
+          classification_state, reason_code, observation_fingerprint, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run("observation-invalid", "123456789012345678", "123456789012345678", "2026-08-12T10:00:00.000Z", "other_source", 1, "present", 1, 3, 2, "unknown", "test", "fingerprint-invalid", "2026-08-12T10:00:00.000Z")).toThrow(/CHECK/);
+
+      db.prepare(
+        `INSERT INTO discord_scheduled_event_observation_history (
+          id, provider_event_id, guild_id, observed_at, source, source_version,
+          observation_state, status_code, entity_type, privacy_level,
+          classification_state, reason_code, observation_fingerprint, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run("observation-valid", "123456789012345678", "123456789012345678", "2026-08-12T10:00:00.000Z", "discord_rest_reconciliation", 1, "present", 1, 3, 2, "allowlisted", "test", "fingerprint-valid", "2026-08-12T10:00:00.000Z");
+      expect(() => db.prepare(
+        `INSERT INTO private_agenda_entries (
+          id, source_provider_event_id, source_observation_id, guild_id,
+          projection_type, title, summary, program_key, scheduled_start_at,
+          timezone, agenda_state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run("agenda-invalid", "999999999999999999", "observation-valid", "123456789012345678", "language_club_agenda_entry.v1", "Title", "Summary", "program", "2026-08-12T10:00:00.000Z", "Asia/Jakarta", "pending", "2026-08-12T10:00:00.000Z", "2026-08-12T10:00:00.000Z")).toThrow(/FOREIGN KEY/);
     } finally {
       db.close();
     }
