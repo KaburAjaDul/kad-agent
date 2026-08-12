@@ -190,6 +190,11 @@ describe("projection cryptography", () => {
     await expect(fetchLanguageGuildEvents("token", baseEnv.DISCORD_TARGET_GUILD_ID!, "KaburAjaDulu", {
       fetchImpl: discordFetch([wrongGuild])
     })).rejects.toThrow("guild assertion failed");
+
+    const duplicate = event("English Practice Session");
+    await expect(fetchLanguageGuildEvents("token", baseEnv.DISCORD_TARGET_GUILD_ID!, "KaburAjaDulu", {
+      fetchImpl: discordFetch([duplicate, { ...duplicate, name: "Japanese for beginner N5" }])
+    })).rejects.toThrow("duplicate event identities");
   });
 
   it("sends the exact canonical signed body and retries projection 429", async () => {

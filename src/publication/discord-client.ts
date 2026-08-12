@@ -65,6 +65,13 @@ export async function fetchLanguageGuildEvents(token: string, targetGuildId: str
   if (events.some((event) => event.guild_id !== targetGuildId)) {
     throw new Error("Discord scheduled-event guild assertion failed.");
   }
+  const eventIds = new Set<string>();
+  for (const event of events) {
+    if (eventIds.has(event.id)) {
+      throw new Error("Discord scheduled-event response contained duplicate event identities.");
+    }
+    eventIds.add(event.id);
+  }
   return events;
 }
 
