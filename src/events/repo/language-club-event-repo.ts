@@ -1,4 +1,5 @@
 import type { SqliteDatabase } from "../../app/repo/sqlite.js";
+import type { RuntimeLeaseContext } from "../../app/repo/runtime-lease-repo.js";
 
 export type StoredLanguageClubTemplate = {
   id: string;
@@ -53,6 +54,17 @@ export type EventStateTransitionRecord = {
   actorDiscordUserId: string;
   occurredAt: string;
   reason: string | null;
+};
+
+export type LanguageClubEffectFinalizerContext = {
+  effectId: string;
+  ownerId: string;
+  runtimeLeaseName: string;
+  runtimeOwnerId: string;
+  fencingToken: number;
+  runtimeFencingToken: number;
+  currentRuntimeFencingToken?: number;
+  checkedAt?: string;
 };
 
 export type StoredEventHostSnapshot = {
@@ -271,7 +283,7 @@ export function createDraftedLanguageClubEvent(
   transition: EventStateTransitionRecord,
   eventHosts: DraftEventHostInsertInput[] = []
 ): void {
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
 
   try {
     db.prepare(
@@ -362,11 +374,24 @@ export function markLanguageClubEventPublished(
   eventId: string,
   publishedAt: string,
   discordAnnouncementMessageId: string,
-  transition: EventStateTransitionRecord
+  transition: EventStateTransitionRecord,
+  finalizer: LanguageClubEffectFinalizerContext
 ): void {
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
 
   try {
+    assertSucceededExternalEffect(db, finalizer, discordAnnouncementMessageId);
+    const current = db.prepare("SELECT state, discord_announcement_message_id FROM events WHERE id = ?").get(eventId) as
+      | { state: string; discord_announcement_message_id: string | null }
+      | undefined;
+    if (!current) {
+      throw new Error("Language Club event tidak ditemukan saat finalisasi publish.");
+    }
+    if (current.state === "published" && current.discord_announcement_message_id === discordAnnouncementMessageId) {
+      db.exec("COMMIT");
+      return;
+    }
+
     db.prepare(
       `
         UPDATE events
@@ -391,10 +416,13 @@ export function storeLanguageClubEventDiscordScheduledEventId(
   db: SqliteDatabase,
   eventId: string,
   discordScheduledEventId: string,
-  updatedAt: string
+  updatedAt: string,
+  finalizer: LanguageClubEffectFinalizerContext
 ): void {
-  const result = db
-    .prepare(
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    assertSucceededExternalEffect(db, finalizer, discordScheduledEventId);
+    const result = db.prepare(
       `
         UPDATE events
         SET discord_scheduled_event_id = ?,
@@ -403,11 +431,72 @@ export function storeLanguageClubEventDiscordScheduledEventId(
           AND discord_scheduled_event_id IS NULL
       `
     )
-    .run(discordScheduledEventId, updatedAt, eventId) as { changes?: number };
+      .run(discordScheduledEventId, updatedAt, eventId) as { changes?: number };
 
-  if (Number(result.changes ?? 0) !== 1) {
-    throw new Error("Discord Scheduled Event ID untuk event ini sudah tersimpan atau event tidak ditemukan.");
+    if (Number(result.changes ?? 0) === 0) {
+    const existing = db.prepare("SELECT discord_scheduled_event_id FROM events WHERE id = ?").get(eventId) as
+      | { discord_scheduled_event_id: string | null }
+      | undefined;
+    if (existing?.discord_scheduled_event_id === discordScheduledEventId) {
+      db.exec("COMMIT");
+      return;
+    }
+      throw new Error("Discord Scheduled Event ID untuk event ini sudah tersimpan atau event tidak ditemukan.");
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
   }
+}
+
+/** Preserve a provider reference when the lease expired before finalization. */
+export function recordLateExternalEffectReference(
+  db: SqliteDatabase,
+  input: { effectId: string; externalReference: string; fencingToken: number; runtimeFencingToken: number; occurredAt: string; error: string }
+): boolean {
+  const result = db.prepare(
+    `UPDATE external_effect_intents
+        SET state = 'needs_reconciliation', external_reference = ?,
+            needs_reconciliation_at = COALESCE(needs_reconciliation_at, ?),
+            last_error = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+      WHERE id = ? AND state IN ('leased', 'needs_reconciliation') AND fencing_token = ? AND runtime_fencing_token = ?
+        AND (external_reference IS NULL OR external_reference = ?)`
+  ).run(
+    input.externalReference,
+    input.occurredAt,
+    input.error.slice(0, 500),
+    input.occurredAt,
+    input.effectId,
+    input.fencingToken,
+    input.runtimeFencingToken,
+    input.externalReference
+  ) as { changes?: number };
+  return Number(result.changes ?? 0) === 1;
+}
+
+export function confirmLanguageClubExternalEffectReference(
+  db: SqliteDatabase,
+  input: { effectId: string; externalReference: string; fencingToken: number; runtimeFencingToken: number; runtimeLeaseName: string; runtimeOwnerId: string; occurredAt: string; actorId: string }
+): boolean {
+  const result = db.prepare(
+    `UPDATE external_effect_intents
+        SET state = 'succeeded', external_reference = ?, succeeded_at = ?,
+            last_error = ?, updated_at = ?, lease_owner = NULL, lease_expires_at = NULL
+      WHERE id = ? AND state = 'needs_reconciliation' AND fencing_token = ?
+        AND runtime_fencing_token <= ?
+        AND EXISTS (SELECT 1 FROM runtime_leases WHERE lease_key = ? AND owner_id = ? AND fencing_token = ? AND expires_at > ?)`
+  ).run(
+    input.externalReference,
+    input.occurredAt,
+    `Operator ${input.actorId} confirmed the external reference; no external deletion performed.`,
+    input.occurredAt,
+    input.effectId,
+    input.fencingToken,
+    input.runtimeFencingToken
+    , input.runtimeLeaseName, input.runtimeOwnerId, input.runtimeFencingToken, input.occurredAt
+  ) as { changes?: number };
+  return Number(result.changes ?? 0) === 1;
 }
 
 export function markLanguageClubEventPublishFailed(
@@ -415,28 +504,71 @@ export function markLanguageClubEventPublishFailed(
   eventId: string,
   failedAt: string,
   publishError: string,
-  transition: EventStateTransitionRecord
-): void {
-  db.exec("BEGIN");
+  transition: EventStateTransitionRecord,
+  runtimeContext: RuntimeLeaseContext
+): boolean {
+  db.exec("BEGIN IMMEDIATE");
 
   try {
-    db.prepare(
+    const result = db.prepare(
       `
         UPDATE events
         SET state = ?,
             publish_failed_at = ?,
             publish_error = ?,
             updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND state IN ('drafted', 'publish_failed')
+          AND EXISTS (SELECT 1 FROM runtime_leases WHERE lease_key = ? AND owner_id = ? AND fencing_token = ? AND expires_at > ?)
       `
-    ).run("publish_failed", failedAt, publishError, failedAt, eventId);
+    ).run("publish_failed", failedAt, publishError, failedAt, eventId, runtimeContext.runtimeLeaseName, runtimeContext.runtimeOwnerId, runtimeContext.runtimeFencingToken, failedAt) as { changes?: number };
+
+    const changed = Number(result.changes ?? 0) === 1;
+    if (!changed) {
+      db.exec("COMMIT");
+      return false;
+    }
 
     insertEventStateTransition(db, transition);
     db.exec("COMMIT");
+    return true;
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+function assertSucceededExternalEffect(
+  db: SqliteDatabase,
+  finalizer: LanguageClubEffectFinalizerContext,
+  externalReference: string
+): void {
+  const effect = db.prepare(
+    `SELECT state, fencing_token, runtime_fencing_token, external_reference
+       FROM external_effect_intents
+      WHERE id = ?`
+  ).get(finalizer.effectId) as
+    | { state: string; fencing_token: number; runtime_fencing_token: number; external_reference: string | null }
+    | undefined;
+
+  if (
+    !effect ||
+    effect.state !== "succeeded" ||
+    Number(effect.fencing_token) !== finalizer.fencingToken ||
+    Number(effect.runtime_fencing_token) !== finalizer.runtimeFencingToken ||
+    (finalizer.currentRuntimeFencingToken !== undefined && finalizer.currentRuntimeFencingToken < Number(effect.runtime_fencing_token)) ||
+    effect.external_reference !== externalReference ||
+    !isActiveRuntimeLease(db, finalizer, finalizer.checkedAt ?? new Date().toISOString())
+  ) {
+    throw new Error("External effect finalizer fencing validation failed: stale runtime lease or intent token.");
+  }
+}
+
+function isActiveRuntimeLease(db: SqliteDatabase, finalizer: LanguageClubEffectFinalizerContext, now: string): boolean {
+  const row = db.prepare(
+    `SELECT 1 FROM runtime_leases
+      WHERE lease_key = ? AND owner_id = ? AND fencing_token = ? AND expires_at > ?`
+  ).get(finalizer.runtimeLeaseName, finalizer.runtimeOwnerId, finalizer.currentRuntimeFencingToken ?? finalizer.runtimeFencingToken, now);
+  return Boolean(row);
 }
 
 export function listEventStateTransitions(db: SqliteDatabase, eventId: string): EventStateTransitionRecord[] {

@@ -39,11 +39,12 @@ describe("DB-only scripts", () => {
         "0003_event_slice_e1_setup_config",
         "0004_event_slice_e1_5_host_snapshot",
         "0005_event_slice_e2_assigned_language_clubs",
-        "0006_event_slice_e2_reminder_delivery"
+        "0006_event_slice_e2_reminder_delivery",
+        "0007_runtime_durability"
       ]
     });
     expect(stdout).not.toContain(databasePath);
-    expect(selectCount(databasePath, "schema_migrations")).toBe(6);
+    expect(selectCount(databasePath, "schema_migrations")).toBe(7);
   });
 
   it("runs seed without Discord credentials", () => {
@@ -69,7 +70,7 @@ describe("DB-only scripts", () => {
 
     runDbScript("db:init", databasePath);
 
-    expect(selectCount(databasePath, "schema_migrations")).toBe(6);
+    expect(selectCount(databasePath, "schema_migrations")).toBe(7);
     expect(selectCount(databasePath, "event_templates")).toBe(1);
   });
 });

@@ -46,6 +46,54 @@ The relationship between a Session or Standalone Gathering and its associated
 Discord event or announcement. It identifies which Discord surface represents
 the gathering.
 
+## Runtime vocabulary (implementation-free)
+
+These terms describe facts and responsibilities in the Kaddy operating model;
+they do not prescribe tables, APIs, queues, or deployment technology.
+
+### Event Observation
+
+A timestamped observation about an event surface, such as a Discord Scheduled
+Event being visible, changed, cancelled, or unavailable. An Event Observation
+is evidence received from an external surface, not an instruction to change
+Kaddy's private record.
+
+### Effect Intent
+
+A recorded request for Kaddy to cause an external effect, such as creating a
+Scheduled Event or sending a reminder. An Effect Intent states what Kaddy
+meant to do and can be checked against the resulting external effect.
+
+### Reminder Job
+
+A planned reminder action with a due time, audience purpose, and delivery
+outcome. A Reminder Job may be retried or stopped, but it never changes the
+meaning of the event itself.
+
+### Reconciliation Record
+
+A record that compares an Effect Intent or Event Observation with the private
+event decision and explains whether they agree, differ, or require an
+operator. A Reconciliation Record preserves uncertainty rather than guessing.
+
+### Runtime Lease
+
+A time-bounded claim that one runtime instance is currently responsible for a
+particular app identity's work. An expired or conflicting Runtime Lease means
+the work must pause until ownership is explicit.
+
+### Operational Metric
+
+A minimal aggregate measurement of event work, reminder delivery, runtime
+health, or reconciliation progress. Operational Metrics support operations;
+they are not member rankings, message-content analysis, or a public score.
+
+### Public Agenda Projection
+
+A reviewed, redacted representation of approved Agenda Entries for public
+reading. A Public Agenda Projection is derived from private authority and can
+be corrected or withdrawn without rewriting the operational record.
+
 ## Relationship summary
 
 `Program` contains one or more `Series` and may relate to `Standalone

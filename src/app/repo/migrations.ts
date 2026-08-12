@@ -499,6 +499,64 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_event_reminders_event_job_key
   ON event_reminders(event_id, job_key);
 `;
 
+const RUNTIME_DURABILITY_MIGRATION_SQL = `
+CREATE TABLE IF NOT EXISTS runtime_leases (
+  lease_key TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  fencing_token INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  heartbeat_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS external_effect_intents (
+  id TEXT PRIMARY KEY,
+  deterministic_key TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  authority_id TEXT NOT NULL,
+  guild_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'succeeded', 'retryable', 'needs_reconciliation', 'cancelled', 'dead_letter')),
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  fencing_token INTEGER NOT NULL DEFAULT 0,
+  runtime_fencing_token INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  external_reference TEXT,
+  last_error TEXT,
+  last_attempted_at TEXT,
+  succeeded_at TEXT,
+  cancelled_at TEXT,
+  needs_reconciliation_at TEXT,
+  dead_lettered_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_external_effect_intents_due
+  ON external_effect_intents(state, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_external_effect_intents_authority
+  ON external_effect_intents(authority_id, guild_id);
+
+ALTER TABLE event_reminders ADD COLUMN lease_owner TEXT;
+ALTER TABLE event_reminders ADD COLUMN lease_expires_at TEXT;
+ALTER TABLE event_reminders ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE event_reminders ADD COLUMN runtime_fencing_token INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE event_reminders ADD COLUMN heartbeat_at TEXT;
+ALTER TABLE event_reminders ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE event_reminders ADD COLUMN next_attempt_at TEXT;
+ALTER TABLE event_reminders ADD COLUMN needs_reconciliation_at TEXT;
+ALTER TABLE event_reminders ADD COLUMN dead_lettered_at TEXT;
+
+UPDATE event_reminders
+SET next_attempt_at = COALESCE(next_attempt_at, scheduled_for),
+    attempts = COALESCE(attempts, 0);
+
+CREATE INDEX IF NOT EXISTS idx_event_reminders_retry_due
+  ON event_reminders(state, next_attempt_at);
+`;
+
 const migrations: Migration[] = [
   {
     id: "0001_foundation",
@@ -523,6 +581,10 @@ const migrations: Migration[] = [
   {
     id: "0006_event_slice_e2_reminder_delivery",
     sql: EVENT_SLICE_E2_REMINDER_DELIVERY_SQL
+  },
+  {
+    id: "0007_runtime_durability",
+    sql: RUNTIME_DURABILITY_MIGRATION_SQL
   }
 ];
 

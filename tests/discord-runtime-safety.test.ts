@@ -2,12 +2,19 @@ import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../src/app/config/env.js";
 import {
   buildAllowedMentions,
+  buildLanguageClubEffectExecutionContext,
   destroyDiscordClient,
   isInteractionGuildAllowed
 } from "../src/discord/runtime/start-discord-runtime.js";
 import { isAllowedGuildId, registerCommands } from "../src/discord/runtime/register-commands.js";
 
 describe("Discord runtime safety helpers", () => {
+  it("propagates the active runtime lease fencing token into event effects", () => {
+    expect(buildLanguageClubEffectExecutionContext(
+      { leaseKey: "runtime", ownerId: "kaddy:test", fencingToken: 23 },
+      { runtimeLease: { durationMs: 30_000, heartbeatIntervalMs: 10_000 } }
+    )).toEqual({ ownerId: "kaddy:test", runtimeLeaseName: "runtime", runtimeOwnerId: "kaddy:test", runtimeFencingToken: 23, leaseDurationMs: 30_000 });
+  });
   it("fails closed for guilds outside the allowlist", () => {
     expect(isAllowedGuildId("1", ["2"])).toBe(false);
     expect(isInteractionGuildAllowed(null, ["2"])).toBe(false);

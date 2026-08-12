@@ -98,7 +98,8 @@ describe("foundation database", () => {
         "0003_event_slice_e1_setup_config",
         "0004_event_slice_e1_5_host_snapshot",
         "0005_event_slice_e2_assigned_language_clubs",
-        "0006_event_slice_e2_reminder_delivery"
+        "0006_event_slice_e2_reminder_delivery",
+        "0007_runtime_durability"
       ]);
       expect(insertedSeedRows).toBe(1);
       expect(tableNames).toEqual(
@@ -115,6 +116,8 @@ describe("foundation database", () => {
           "language_club_guild_config",
           "language_clubs",
           "language_club_staff_roles",
+          "runtime_leases",
+          "external_effect_intents",
           "schema_migrations"
         ])
       );
@@ -153,7 +156,13 @@ describe("foundation database", () => {
         expect.arrayContaining([
           expect.objectContaining({ name: "state", notnull: 1 }),
           expect.objectContaining({ name: "job_key", notnull: 1 }),
-          expect.objectContaining({ name: "discord_message_id", notnull: 0 })
+          expect.objectContaining({ name: "discord_message_id", notnull: 0 }),
+          expect.objectContaining({ name: "lease_owner", notnull: 0 }),
+          expect.objectContaining({ name: "lease_expires_at", notnull: 0 }),
+          expect.objectContaining({ name: "fencing_token", notnull: 1 }),
+          expect.objectContaining({ name: "runtime_fencing_token", notnull: 1 }),
+          expect.objectContaining({ name: "attempts", notnull: 1 }),
+          expect.objectContaining({ name: "next_attempt_at", notnull: 0 })
         ])
       );
       expect(templateUniqueIndexes).toContainEqual(["template_key", "template_version"]);

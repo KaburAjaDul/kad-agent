@@ -19,6 +19,9 @@ import {
   type OperationalLogger
 } from "../../app/lib/operational-logger.js";
 import type { SqliteDatabase } from "../../app/repo/sqlite.js";
+import type { RuntimeLeaseContext } from "../../app/repo/runtime-lease-repo.js";
+import { acquireRuntimeLease, releaseRuntimeLease, type RuntimeLease } from "../../app/repo/runtime-lease-repo.js";
+import type { OperationalMetrics } from "../../app/runtime/operational-metrics.js";
 import { isAllowedGuildId } from "./register-commands.js";
 import { createLanguageClubEvent } from "../../events/service/create-language-club-event.js";
 import {
@@ -30,15 +33,30 @@ import {
   listLanguageClubsByGuildId,
   upsertLanguageClubCommand
 } from "../../events/service/language-club-registry-service.js";
+import type { LanguageClubEffectExecutionContext } from "../../events/service/language-club-effect-reconciliation.js";
 
 export type DiscordRuntime = {
   publishReminder: (input: { channelId: string; content: string }) => Promise<{ messageId: string }>;
   destroy: () => Promise<void>;
+  setLeaseValid: (valid: boolean) => void;
+  isReady: () => boolean;
+};
+
+export const KADDY_GATEWAY_INTENTS = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildScheduledEvents] as const;
+
+export type StartDiscordRuntimeOptions = {
+  lease?: RuntimeLease;
+  ownerId?: string;
+  clientFactory?: () => Client;
+  metrics?: OperationalMetrics;
+  onReadinessChange?: (ready: boolean) => void;
+  startupTimeoutMs?: number;
 };
 
 export async function startDiscordRuntime(
   appConfig: AppConfig,
-  db: SqliteDatabase
+  db: SqliteDatabase,
+  options: StartDiscordRuntimeOptions = {}
 ): Promise<DiscordRuntime> {
   const logger = createOperationalLogger({ level: appConfig.logLevel });
 
@@ -50,16 +68,60 @@ export async function startDiscordRuntime(
     throw new Error("DISCORD_ALLOWED_GUILD_IDS is required to start the Discord runtime.");
   }
 
-  const client = new Client({
-    intents: [GatewayIntentBits.Guilds]
+  const lease = options.lease ?? acquireRuntimeLease(db, {
+    ownerId: options.ownerId ?? `kaddy:${process.pid}`,
+    leaseDurationMs: appConfig.runtimeLease?.durationMs ?? 30_000
   });
+  if (!lease) {
+    options.metrics?.recordLeaseConflict();
+    throw new Error("Kaddy runtime lease is already held by another owner.");
+  }
+  const ownsLease = !options.lease;
+
+  let leaseValid = true;
+  let gatewayReady = false;
+  const client = (options.clientFactory ?? (() => new Client({
+    intents: [...KADDY_GATEWAY_INTENTS]
+  })))();
+
+  const setReadiness = (ready: boolean) => {
+    gatewayReady = ready;
+    options.metrics?.setGatewayReady(ready);
+    options.onReadinessChange?.(ready && leaseValid);
+  };
+
+  const markGatewayUnavailable = () => setReadiness(false);
 
   client.once(Events.ClientReady, (readyClient) => {
-    logger.info("discord_runtime_ready", { guildCount: readyClient.guilds.cache.size });
+    try {
+      assertDiscordIdentityAndGuilds(readyClient, appConfig.discord.appId, appConfig.discord.allowedGuildIds);
+      setReadiness(true);
+      logger.info("discord_runtime_ready", { guildCount: readyClient.guilds.cache.size });
+    } catch (error) {
+      setReadiness(false);
+      logger.error("discord_identity_assertion_failed", { error });
+      void destroyDiscordClient(client);
+    }
   });
 
   client.on(Events.Error, (error) => {
+    markGatewayUnavailable();
     logger.error("discord_client_error", { error });
+  });
+  client.on(Events.Invalidated, markGatewayUnavailable);
+  client.on(Events.ShardDisconnect, markGatewayUnavailable);
+  client.on(Events.ShardReconnecting, () => {
+    options.metrics?.recordGatewayReconnect();
+    markGatewayUnavailable();
+  });
+  client.on(Events.ShardResume, () => {
+    options.metrics?.recordGatewayReconnect();
+    try {
+      assertDiscordIdentityAndGuilds(client, appConfig.discord.appId, appConfig.discord.allowedGuildIds);
+      setReadiness(true);
+    } catch {
+      markGatewayUnavailable();
+    }
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
@@ -68,6 +130,7 @@ export async function startDiscordRuntime(
     }
 
     if (!isAllowedGuildId(interaction.guildId, appConfig.discord.allowedGuildIds)) {
+      options.metrics?.recordInteraction("rejected");
       try {
         await rejectInteraction(interaction);
       } catch (error) {
@@ -83,6 +146,25 @@ export async function startDiscordRuntime(
           ephemeral: true,
           allowedMentions: { parse: [] }
         });
+        options.metrics?.recordInteraction("success");
+        return;
+      }
+
+      if (interaction.commandName === "status") {
+        await replyEphemeral(interaction, gatewayReady && leaseValid ? "Kaddy runtime is ready." : "Kaddy runtime is not ready.");
+        options.metrics?.recordInteraction("success");
+        return;
+      }
+
+      if ((appConfig.runtimeMode ?? "observe") === "observe") {
+        options.metrics?.recordInteraction("mutation_refused");
+        await replyEphemeral(interaction, "Kaddy is in observe mode; setup, event, effect, and reminder mutations are disabled.");
+        return;
+      }
+
+      if (!leaseValid || !gatewayReady) {
+        options.metrics?.recordInteraction("rejected");
+        await replyEphemeral(interaction, "Kaddy runtime is not ready to perform mutations.");
         return;
       }
 
@@ -129,27 +211,32 @@ export async function startDiscordRuntime(
 
             return { messageId: message.id };
           }
-        });
+        }, buildLanguageClubEffectExecutionContext(lease, appConfig));
+        options.metrics?.recordInteraction("success");
         return;
       }
 
       if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "e1-configure") {
         await handleConfigureE1Setup(interaction, db);
+        options.metrics?.recordInteraction("success");
         return;
       }
 
       if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "e1-show") {
         await handleShowE1Setup(interaction, db);
+        options.metrics?.recordInteraction("success");
         return;
       }
 
       if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "language-club-upsert") {
         await handleLanguageClubUpsert(interaction, db);
+        options.metrics?.recordInteraction("success");
         return;
       }
 
       if (interaction.commandName === "setup" && interaction.options.getSubcommand() === "language-club-list") {
         await handleLanguageClubList(interaction, db);
+        options.metrics?.recordInteraction("success");
       }
     } catch (error) {
       logger.error("discord_interaction_failed", {
@@ -157,14 +244,25 @@ export async function startDiscordRuntime(
         guildId: interaction.guildId,
         error
       });
+      options.metrics?.recordInteraction("failed");
       await replyGenericInteractionError(interaction, logger);
     }
   });
 
-  await client.login(appConfig.discord.botToken);
+  try {
+    await withTimeout(waitForDiscordReady(client, appConfig.discord.appId, appConfig.discord.allowedGuildIds, options.startupTimeoutMs ?? appConfig.startupTimeoutMs ?? 30_000, () => {
+      setReadiness(false);
+    }, () => client.login(appConfig.discord.botToken as string)), options.startupTimeoutMs ?? appConfig.startupTimeoutMs ?? 30_000, "Discord startup timed out.");
+  } catch (error) {
+    if (ownsLease) releaseRuntimeLease(db, { ownerId: lease.ownerId, fencingToken: lease.fencingToken });
+    throw error;
+  }
 
   return {
     publishReminder: async ({ channelId, content }) => {
+      if ((appConfig.runtimeMode ?? "observe") === "observe" || !leaseValid) {
+        throw new Error("Reminder mutation is disabled until KADDY_RUNTIME_MODE=operate and a valid runtime lease is held.");
+      }
       const channel = await client.channels.fetch(channelId);
 
       if (!channel || channel.type === ChannelType.DM || !("send" in channel)) {
@@ -175,12 +273,114 @@ export async function startDiscordRuntime(
 
       return { messageId: message.id };
     },
-    destroy: () => destroyDiscordClient(client)
+    destroy: async () => {
+      setReadiness(false);
+      await destroyDiscordClient(client);
+      if (ownsLease) {
+        releaseRuntimeLease(db, { ownerId: lease.ownerId, fencingToken: lease.fencingToken });
+      }
+    },
+    setLeaseValid: (valid) => {
+      leaseValid = valid;
+      if (!valid) {
+        setReadiness(false);
+      } else {
+        setReadiness(gatewayReady);
+      }
+    },
+    isReady: () => gatewayReady && leaseValid
   };
 }
 
 export async function destroyDiscordClient(client: { destroy: () => void | Promise<void> }): Promise<void> {
   await client.destroy();
+}
+
+export function assertDiscordIdentityAndGuilds(
+  client: { user: { id: string } | null; guilds: { cache: { has: (id: string) => boolean; size: number } } },
+  appId: string | undefined,
+  allowedGuildIds: readonly string[]
+): void {
+  if (!appId) {
+    throw new Error("DISCORD_APP_ID is required for Discord identity assertion.");
+  }
+  if (!client.user || client.user.id !== appId) {
+    throw new Error("Discord bot identity does not match DISCORD_APP_ID.");
+  }
+  if (allowedGuildIds.length === 0 || allowedGuildIds.some((guildId) => !client.guilds.cache.has(guildId))) {
+    throw new Error("Discord configured guild allowlist is not fully visible after login.");
+  }
+}
+
+export function buildLanguageClubEffectExecutionContext(
+  lease: Pick<RuntimeLease, "leaseKey" | "ownerId" | "fencingToken">,
+  appConfig: Pick<AppConfig, "runtimeLease">
+): LanguageClubEffectExecutionContext & RuntimeLeaseContext {
+  return {
+    ownerId: lease.ownerId,
+    runtimeLeaseName: lease.leaseKey,
+    runtimeOwnerId: lease.ownerId,
+    runtimeFencingToken: lease.fencingToken,
+    leaseDurationMs: appConfig.runtimeLease?.durationMs ?? 30_000
+  };
+}
+
+async function waitForDiscordReady(
+  client: Client,
+  appId: string | undefined,
+  allowedGuildIds: readonly string[],
+  timeoutMs: number,
+  onUnavailable: () => void,
+  login: () => void | Promise<unknown>
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      client.off(Events.ClientReady, onReady);
+      client.off(Events.Error, onError);
+      client.off(Events.Invalidated, onUnavailable);
+      client.off(Events.ShardDisconnect, onUnavailable);
+      error ? reject(error) : resolve();
+    };
+    const onReady = (readyClient: Client) => {
+      try {
+        assertDiscordIdentityAndGuilds(readyClient, appId, allowedGuildIds);
+        finish();
+      } catch (error) {
+        onUnavailable();
+        finish(error);
+      }
+    };
+    const onError = (error: Error) => {
+      onUnavailable();
+      finish(error);
+    };
+    const timeoutHandle = setTimeout(() => finish(new Error("Discord startup timed out.")), Math.max(1, timeoutMs));
+    client.once(Events.ClientReady, onReady);
+    client.once(Events.Error, onError);
+    client.once(Events.Invalidated, onUnavailable);
+    client.once(Events.ShardDisconnect, onUnavailable);
+    try {
+      Promise.resolve(login()).catch(finish);
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error(message)), Math.max(1, timeoutMs));
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 }
 
 export function buildAllowedMentions(content: string, trustedUserIds: readonly string[] = []): { parse: []; users?: string[] } {
@@ -225,7 +425,8 @@ async function handleCreateLanguageClub(
       content: string;
       allowedUserIds: string[];
     }) => Promise<{ messageId: string }>;
-  }
+  },
+  effectExecutionContext: LanguageClubEffectExecutionContext
 ): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
 
@@ -262,7 +463,8 @@ async function handleCreateLanguageClub(
     },
     {
       db,
-      publisher
+      publisher,
+      effectExecutionContext
     }
   );
 

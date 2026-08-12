@@ -10,6 +10,7 @@ import {
 import { createLanguageClubEvent } from "../src/events/service/create-language-club-event.js";
 import { configureLanguageClubGuild } from "../src/events/service/language-club-guild-config-service.js";
 import { upsertLanguageClubCommand } from "../src/events/service/language-club-registry-service.js";
+import { acquireRuntimeLease } from "../src/app/repo/runtime-lease-repo.js";
 
 describe("createLanguageClubEvent", () => {
   it("creates one scheduled event, persists its ID, then publishes the announcement", async () => {
@@ -40,6 +41,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             createScheduledEvent: async (payload) => {
               publishOrder.push("scheduled_event");
@@ -196,6 +198,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             createScheduledEvent: async (payload) => {
               scheduledEventChannelIds.push(payload.channelId);
@@ -277,6 +280,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             publishAnnouncement: async () => {
               throw new Error("should not publish");
@@ -318,7 +322,7 @@ describe("createLanguageClubEvent", () => {
           date: "2026-04-24",
           time: "19:30"
         },
-        { db, publisher: createTestPublisher() }
+        { db, effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 }, publisher: createTestPublisher() }
       );
       const inactiveResult = await createLanguageClubEvent(
         {
@@ -330,7 +334,7 @@ describe("createLanguageClubEvent", () => {
           date: "2026-04-24",
           time: "19:30"
         },
-        { db, publisher: createTestPublisher() }
+        { db, effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 }, publisher: createTestPublisher() }
       );
 
       expect(unknownResult).toEqual({
@@ -369,6 +373,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             publishAnnouncement: async () => ({ messageId: "message-123" })
           })
@@ -388,6 +393,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             publishAnnouncement: async () => ({ messageId: "message-456" })
           })
@@ -411,6 +417,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             publishAnnouncement: async () => ({ messageId: "message-duplicate-club" })
           })
@@ -435,6 +442,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             publishAnnouncement: async () => ({ messageId: "message-789" })
           })
@@ -471,6 +479,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             publishAnnouncement: async (payload) => {
               publishedPayloads.push(payload);
@@ -517,6 +526,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             publishAnnouncement: async () => ({ messageId: "message-123" })
           })
@@ -551,6 +561,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             publishAnnouncement: async () => ({ messageId: "message-123" })
           })
@@ -586,6 +597,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             createScheduledEvent: async () => {
               throw new Error("Discord scheduled event failed");
@@ -652,6 +664,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             createScheduledEvent: async () => {
               throw new Error(providerError);
@@ -701,6 +714,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             createScheduledEvent: async () => {
               createScheduledEventCallCount += 1;
@@ -767,6 +781,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             createScheduledEvent: async () => {
               createScheduledEventCallCount += 1;
@@ -809,6 +824,7 @@ describe("createLanguageClubEvent", () => {
         },
         {
           db,
+          effectExecutionContext: { ownerId: "test-language-club", runtimeLeaseName: "runtime", runtimeOwnerId: "test-language-club", runtimeFencingToken: 1 },
           publisher: createTestPublisher({
             createScheduledEvent: async () => ({ scheduledEventId: "scheduled-event-reminder-failure" }),
             publishAnnouncement: async () => ({ messageId: "message-reminder-failure" })
@@ -857,6 +873,8 @@ function createTestDatabase() {
   const db = createSqliteConnection(":memory:");
   runMigrations(db);
   seedFoundationData(db);
+  acquireRuntimeLease(db, { leaseKey: "runtime", ownerId: "test-language-club", now: "2026-04-23T10:00:00.000Z", leaseDurationMs: 86_400_000 });
+  db.prepare("UPDATE runtime_leases SET expires_at = '9999-01-01T00:00:00.000Z' WHERE lease_key = 'runtime'").run();
   return db;
 }
 

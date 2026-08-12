@@ -6,6 +6,11 @@ export const foundationCommands = [
     .setDescription("Check whether the Milestone 0 bot foundation is online.")
     .toJSON(),
   new SlashCommandBuilder()
+    .setName("status")
+    .setDescription("Check Kaddy runtime status without changing state.")
+    .setDMPermission(false)
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName("event")
     .setDescription("Event operations commands for staff.")
     .setDMPermission(false)
