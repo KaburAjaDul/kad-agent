@@ -67,6 +67,7 @@ export type OperationalMetrics = {
   recordJobSweep: (outcome: JobSweepOutcome) => void;
   setPublicationMode: (mode: PublicationMode) => void;
   setPublicationObservationStatus: (status: PublicationObservationStatus) => void;
+  setPublicationUnknownEvents: (count: number) => void;
   recordPublicationReconciliation: (outcome: PublicationReconciliationOutcome) => void;
   recordPublicationOutcome: (outcome: PublicationOutcome) => void;
   setPublicationRevision: (revision: number) => void;
@@ -109,6 +110,7 @@ export function createOperationalMetrics(options: { databasePath?: string; now?:
   const publicationOutcomeCounters = emptyCounts(PUBLICATION_OUTCOMES);
   let publicationMode: PublicationMode = "disabled";
   let publicationObservationStatus: PublicationObservationStatus = "disabled";
+  let publicationUnknownEvents = 0;
   let publicationRevision = 0;
   let oldestPublicationOutboxAgeSeconds = 0;
   let oldestDueReminderAgeSeconds = 0;
@@ -150,6 +152,9 @@ export function createOperationalMetrics(options: { databasePath?: string; now?:
     },
     setPublicationObservationStatus: (status) => {
       publicationObservationStatus = status;
+    },
+    setPublicationUnknownEvents: (count) => {
+      publicationUnknownEvents = nonNegativeInteger(count);
     },
     recordPublicationReconciliation: (outcome) => {
       counters.publication_reconciliations_total += 1;
@@ -200,6 +205,7 @@ export function createOperationalMetrics(options: { databasePath?: string; now?:
       publication: {
         mode: publicationMode,
         observationStatus: publicationObservationStatus,
+        unknownEvents: publicationUnknownEvents,
         outbox: { ...publicationOutboxCounts },
         reconciliation: { ...publicationReconciliationCounters },
         outcomes: { ...publicationOutcomeCounters },
@@ -223,6 +229,7 @@ export function createOperationalMetrics(options: { databasePath?: string; now?:
       effectCounts,
       publicationMode,
       publicationObservationStatus,
+      publicationUnknownEvents,
       publicationOutboxCounts,
       publicationReconciliationCounters,
       publicationOutcomeCounters,
@@ -341,6 +348,7 @@ function renderPrometheus(input: {
   effectCounts: Record<string, number>;
   publicationMode: PublicationMode;
   publicationObservationStatus: PublicationObservationStatus;
+  publicationUnknownEvents: number;
   publicationOutboxCounts: Record<string, number>;
   publicationReconciliationCounters: Record<string, number>;
   publicationOutcomeCounters: Record<string, number>;
@@ -376,6 +384,9 @@ function renderPrometheus(input: {
     ...Object.entries(input.effectCounts).map(([state, value]) => `kaddy_external_effect_intents{state="${state}"} ${value}`),
     `kaddy_publication_mode{mode="${input.publicationMode}"} 1`,
     `kaddy_publication_observation_status{status="${input.publicationObservationStatus}"} 1`,
+    "# HELP kaddy_publication_unknown_events Current redacted unknown-title observations in the latest successful sweep.",
+    "# TYPE kaddy_publication_unknown_events gauge",
+    `kaddy_publication_unknown_events ${input.publicationUnknownEvents}`,
     ...Object.entries(input.publicationOutboxCounts).map(([state, value]) => `kaddy_public_projection_outbox{state="${state}"} ${value}`),
     ...Object.entries(input.publicationReconciliationCounters).map(([outcome, value]) => `kaddy_publication_reconciliations_total{outcome="${outcome}"} ${value}`),
     ...Object.entries(input.publicationOutcomeCounters).map(([outcome, value]) => `kaddy_publication_outcomes_total{outcome="${outcome}"} ${value}`),

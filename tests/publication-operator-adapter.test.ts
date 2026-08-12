@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatInputCommandInteraction } from "discord.js";
 import { foundationCommands } from "../src/discord/discord/command-catalog.js";
 import { handlePublicationOperatorCommand } from "../src/publication/publication-operator-adapter.js";
@@ -12,8 +12,14 @@ const GUILD_ID = "123456789012345678";
 const EVENT_ID = "234567890123456789";
 const dbs: ReturnType<typeof createSqliteConnection>[] = [];
 
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-08-12T10:00:01.000Z"));
+});
+
 afterEach(() => {
   while (dbs.length > 0) dbs.pop()?.close();
+  vi.useRealTimers();
 });
 
 describe("Discord publication operator adapter", () => {

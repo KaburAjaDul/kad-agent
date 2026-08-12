@@ -14,16 +14,24 @@ snapshot to Kaddy's staging publication endpoint.
 
 The bot is pinned to `DISCORD_TARGET_GUILD_ID` (a Staging secret) and checks
 the configured `DISCORD_TARGET_GUILD_NAME` as a display assertion. Unknown
-scheduled titles are rejected without logging the title; only the count is
-reported to the workflow.
+scheduled titles use an explicit fail-closed policy by default. Active
+publication and direct reconciliation reject the complete snapshot without
+logging the title. Observe mode alone derives `record_shadow`: a valid
+active/scheduled unknown is stored as a redacted private observation with a
+null normalized title, no agenda or approval row, and any stale private agenda
+or approval for that source is withdrawn. Invalid identity, event boundary,
+schedule, or an unknown completed/canceled event still rejects before the
+transaction in every mode.
 
 The website consumes the signed snapshot, not Discord directly. The snapshot is
 a full replacement: `entries` is the complete approved set and `tombstones` is
 reserved for future incremental consumers. Completed, canceled, and disappeared
 source events are absent, so the Worker withdraws prior rows. An empty approved
 set is a valid signed snapshot when Discord returns no active/scheduled events;
-an unknown event rejects the complete snapshot so an unsafe title cannot
-silently disappear into publication. The last known good snapshot remains live.
+an unknown event rejects the complete snapshot in active/default policy so an
+unsafe title cannot silently disappear into publication. Observe shadow rows
+are counted as seen and never enqueue a public projection; the last known good
+snapshot remains live.
 
 The exact request body is recursively key-sorted canonical JSON. The Ed25519
 signature bytes are `v1\nissuedAt\nexpiresAt\nnonce\ncontentSha256\nbody`,

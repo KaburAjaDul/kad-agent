@@ -302,6 +302,31 @@ describe("Kaddy runtime mode and observability", () => {
     }
   });
 
+  it("exposes only an aggregate unknown-title gauge after a successful observe sweep", async () => {
+    const db = createSqliteConnection(":memory:");
+    try {
+      runMigrations(db);
+      const metrics = createOperationalMetrics();
+      const runner = new BackgroundJobRunner(db, {
+        mode: "observe",
+        publicationMode: "observe",
+        metrics,
+        publication: {
+          reconcile: async () => ({ reconciliationOutcome: "unknown", unknownEvents: 3 }),
+          dispatch: async () => ({ outcome: "success" })
+        }
+      });
+      const result = await runner.runPublicationSweep(new Date("2026-01-01T00:00:00.000Z"));
+      expect(result).toMatchObject({ observed: true, dispatched: false, reconciliationOutcome: "unknown", unknownEvents: 3, publicationOutcome: "skipped" });
+      const body = metrics.renderPrometheus();
+      expect(body).toContain("kaddy_publication_unknown_events 3");
+      expect(body).not.toContain("{event");
+      expect(body).not.toContain("private");
+    } finally {
+      db.close();
+    }
+  });
+
   it("refreshes DB-backed queue, reconciliation, storage, and timestamp gauges", () => {
     const db = createSqliteConnection(":memory:");
     try {

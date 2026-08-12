@@ -28,7 +28,7 @@ public score, member ranking, sentiment signal, or moderation/risk score.
 
 | Area | V1 aggregates | Explicitly excluded |
 | --- | --- | --- |
-| Event | observations by outcome, approved/publication state, correction and withdrawal counts, reconciliation lag | event payload dumps, private notes, unapproved fields |
+| Event | observations by outcome, approved/publication state, correction and withdrawal counts, reconciliation lag, and the aggregate current unknown-title gauge | event payload dumps, private notes, unapproved fields, title labels or dimensions |
 | Reminder | jobs due/sent/failed/cancelled, delivery latency, retry and queue age | reminder message bodies, member-level ranking |
 | Runtime | process health, lease conflicts/expiry, job duration, restart and shutdown outcomes, SQLite/WAL/disk pressure | host secrets, environment dumps, provider payloads |
 | Reconciliation | intents matched, mismatched, unknown, retried, operator-resolved, and age of unresolved records | inferred success, silent repair, raw Discord responses |
@@ -99,4 +99,3 @@ Any missing owner, retention approval, failed deletion, duplicate runtime,
 ambiguous reconciliation, or privileged-intent toggle stops collection and
 public projection. Last-known-good public data may remain readable, but no new
 write proceeds until the issue is resolved and recorded.
-

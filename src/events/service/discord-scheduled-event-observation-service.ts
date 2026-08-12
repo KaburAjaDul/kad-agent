@@ -16,10 +16,14 @@ export type DiscordObservationReconciliationOptions = {
   guildId: string;
   events: readonly DiscordScheduledEvent[];
   context: RuntimeLeaseContext;
+  /** Unknown titles are fail-closed by default; only observe mode may opt in. */
+  unknownTitlePolicy?: UnknownTitlePolicy;
   observedAt?: string;
   /** Injectable trusted local clock; never derive lease validity from provider time. */
   now?: () => Date;
 };
+
+export type UnknownTitlePolicy = "reject" | "record_shadow";
 
 export type DiscordObservationReconciliationResult = {
   observed: number;
@@ -47,6 +51,7 @@ export function reconcileDiscordScheduledEventObservations(
   const observedAt = new Date(options.observedAt ?? new Date().toISOString()).toISOString();
   const mutationNow = (options.now ?? (() => new Date()))().toISOString();
   const providerEventIds = new Set<string>();
+  const unknownTitlePolicy = options.unknownTitlePolicy ?? "reject";
   const classifiedEvents = options.events.map((event) => {
     if (event.guild_id !== options.guildId) {
       throw new Error("Discord observation guild assertion failed.");
@@ -55,7 +60,7 @@ export function reconcileDiscordScheduledEventObservations(
       throw new Error("Discord observation snapshot rejected; duplicate scheduled-event identity.");
     }
     providerEventIds.add(event.id);
-    return { event, classified: normalizeObservation(event, options.guildId, observedAt) };
+    return { event, classified: normalizeObservation(event, options.guildId, observedAt, unknownTitlePolicy) };
   });
   const unsafeEvent = classifiedEvents.find(({ classified }) => classified.snapshotUnsafe);
   if (unsafeEvent) {
@@ -144,7 +149,8 @@ export function reconcileDiscordScheduledEventObservations(
 function normalizeObservation(
   event: DiscordScheduledEvent,
   guildId: string,
-  observedAt: string
+  observedAt: string,
+  unknownTitlePolicy: UnknownTitlePolicy
 ): { observation: DiscordScheduledEventObservation; publicEntry: ReturnType<typeof publicEntryFor> | null; snapshotUnsafe: boolean } {
   const base = {
     providerEventId: event.id,
@@ -229,6 +235,41 @@ function normalizeObservation(
   }
 
   if (!classification) {
+    if (unknownTitlePolicy === "record_shadow") {
+      const schedule = normalizeUnknownSchedule(event);
+      if (schedule) {
+        return {
+          publicEntry: null,
+          snapshotUnsafe: false,
+          observation: {
+            ...base,
+            observationState: "present",
+            normalizedTitle: null,
+            classificationState: "unknown",
+            classificationCategory: null,
+            programKey: null,
+            seriesKey: null,
+            scheduledStartAt: schedule.startAt,
+            scheduledEndAt: schedule.endAt,
+            reasonCode: "unknown_event_title"
+          }
+        };
+      }
+      return {
+        publicEntry: null,
+        snapshotUnsafe: true,
+        observation: {
+          ...base,
+          observationState: "present",
+          normalizedTitle: null,
+          classificationState: "invalid",
+          classificationCategory: null,
+          programKey: null,
+          seriesKey: null,
+          reasonCode: "invalid_event_schedule"
+        }
+      };
+    }
     return {
       publicEntry: null,
       snapshotUnsafe: true,
@@ -279,6 +320,16 @@ function normalizeObservation(
       }
     };
   }
+}
+
+function normalizeUnknownSchedule(event: DiscordScheduledEvent): { startAt: string; endAt: string | null } | null {
+  const start = new Date(event.scheduled_start_time);
+  if (!Number.isFinite(start.getTime())) return null;
+  const startAt = start.toISOString();
+  if (event.scheduled_end_time == null) return { startAt, endAt: null };
+  const end = new Date(event.scheduled_end_time);
+  if (!Number.isFinite(end.getTime()) || end.getTime() <= start.getTime()) return null;
+  return { startAt, endAt: end.toISOString() };
 }
 
 function privateAgendaId(guildId: string, providerEventId: string): string {

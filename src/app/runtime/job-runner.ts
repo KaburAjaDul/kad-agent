@@ -35,6 +35,8 @@ export type PublicationJobContext = {
 
 export type PublicationObservation = {
   reconciliationOutcome?: PublicationReconciliationOutcome;
+  /** Number of redacted unknown-title rows in the latest successful sweep. */
+  unknownEvents?: number;
   revision?: number;
   outboxStateCounts?: Record<string, number>;
 };
@@ -55,6 +57,7 @@ export type PublicationSweepResult = {
   observed: boolean;
   dispatched: boolean;
   reconciliationOutcome?: PublicationReconciliationOutcome;
+  unknownEvents?: number;
   publicationOutcome?: PublicationOutcome;
 };
 
@@ -112,6 +115,7 @@ export class BackgroundJobRunner {
       const observation = await this.options.publication.reconcile(context);
       const reconciliationOutcome = observation?.reconciliationOutcome ?? "success";
       this.options.metrics?.recordPublicationReconciliation(reconciliationOutcome);
+      this.options.metrics?.setPublicationUnknownEvents(observation?.unknownEvents ?? 0);
       if (observation?.revision !== undefined) this.options.metrics?.setPublicationRevision(observation.revision);
       if (observation?.outboxStateCounts) this.options.metrics?.setPublicationOutboxStateCounts(observation.outboxStateCounts);
       this.options.metrics?.setPublicationObservationStatus("succeeded");
@@ -122,7 +126,7 @@ export class BackgroundJobRunner {
       if (mode === "observe" || !this.options.publication.dispatch) {
         const outcome: PublicationOutcome = mode === "observe" ? "skipped" : "refused";
         this.options.metrics?.recordPublicationOutcome(outcome);
-        return { mode, observed: true, dispatched: false, reconciliationOutcome, publicationOutcome: outcome };
+        return { mode, observed: true, dispatched: false, reconciliationOutcome, unknownEvents: observation?.unknownEvents ?? 0, publicationOutcome: outcome };
       }
 
       const dispatched = await this.options.publication.dispatch(context, observation);
@@ -131,7 +135,7 @@ export class BackgroundJobRunner {
       if (dispatched?.revision !== undefined) this.options.metrics?.setPublicationRevision(dispatched.revision);
       if (dispatched?.outboxStateCounts) this.options.metrics?.setPublicationOutboxStateCounts(dispatched.outboxStateCounts);
       this.options.metrics?.refreshFromDatabase(this.db);
-      return { mode, observed: true, dispatched: true, reconciliationOutcome, publicationOutcome };
+      return { mode, observed: true, dispatched: true, reconciliationOutcome, unknownEvents: observation?.unknownEvents ?? 0, publicationOutcome };
     } catch {
       this.options.metrics?.setPublicationObservationStatus("failed");
       this.options.metrics?.recordPublicationReconciliation("failed");
