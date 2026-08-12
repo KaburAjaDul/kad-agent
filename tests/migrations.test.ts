@@ -19,6 +19,46 @@ afterEach(() => {
 });
 
 describe("foundation database", () => {
+  it("refuses to upgrade a non-empty legacy projection outbox without canonical hashing", () => {
+    const db = createSqliteConnection(":memory:");
+    try {
+      db.exec(`
+        CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+        CREATE TABLE public_projection_outbox (
+          id TEXT PRIMARY KEY,
+          projection_type TEXT NOT NULL,
+          agenda_entry_id TEXT NOT NULL,
+          projection_revision INTEGER NOT NULL,
+          state TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          published_at TEXT,
+          last_error TEXT
+        );
+      `);
+      const migrationIds = [
+        "0001_foundation", "0002_event_slice_e1", "0003_event_slice_e1_setup_config",
+        "0004_event_slice_e1_5_host_snapshot", "0005_event_slice_e2_assigned_language_clubs",
+        "0006_event_slice_e2_reminder_delivery", "0007_runtime_durability",
+        "0008_discord_observations_and_projection"
+      ];
+      const insert = db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)");
+      for (const id of migrationIds) insert.run(id, "2026-08-12T10:00:00.000Z");
+      db.prepare(
+        `INSERT INTO public_projection_outbox
+          (id, projection_type, agenda_entry_id, projection_revision, state, payload_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run("legacy-1", "language_club_agenda_entry.v1", "agenda-1", 1, "pending", "{}", "2026-08-12T10:00:00.000Z", "2026-08-12T10:00:00.000Z");
+
+      expect(() => runMigrations(db)).toThrow(/refuses non-empty legacy public_projection_outbox/);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM public_projection_outbox").get()).toMatchObject({ count: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE id = ?").get("0009_public_projection_outbox_durability")).toMatchObject({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
   it("creates E1 event schema and seeded language club template", () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), "kad-agent-foundation-"));
     tempDirectories.push(tempDirectory);
@@ -54,6 +94,7 @@ describe("foundation database", () => {
       const templateUniqueIndexes = listUniqueIndexes(db, "event_templates");
       const eventUniqueIndexes = listUniqueIndexes(db, "events");
       const eventHostUniqueIndexes = listUniqueIndexes(db, "event_hosts");
+      const publicProjectionOutboxUniqueIndexes = listUniqueIndexes(db, "public_projection_outbox");
       const seededTemplateId = String(
         (
           db.prepare("SELECT id FROM event_templates WHERE template_key = ? AND template_version = ?").get(
@@ -100,7 +141,8 @@ describe("foundation database", () => {
         "0005_event_slice_e2_assigned_language_clubs",
         "0006_event_slice_e2_reminder_delivery",
         "0007_runtime_durability",
-        "0008_discord_observations_and_projection"
+        "0008_discord_observations_and_projection",
+        "0009_public_projection_outbox_durability"
       ]);
       expect(insertedSeedRows).toBe(1);
       expect(tableNames).toEqual(
@@ -183,6 +225,10 @@ describe("foundation database", () => {
         "scheduled_start_at"
       ]);
       expect(eventHostUniqueIndexes).toContainEqual(["event_id", "discord_user_id"]);
+      expect(publicProjectionOutboxUniqueIndexes).toContainEqual([
+        "projection_type",
+        "projection_revision"
+      ]);
       expect(seededTemplate).toEqual({
         template_key: "language_club_default",
         template_version: 1,

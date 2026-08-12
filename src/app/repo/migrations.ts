@@ -3,6 +3,7 @@ import type { SqliteDatabase } from "./sqlite.js";
 type Migration = {
   id: string;
   sql: string;
+  before?: (db: SqliteDatabase) => void;
 };
 
 const FOUNDATION_MIGRATION_SQL = `
@@ -688,6 +689,52 @@ CREATE TABLE IF NOT EXISTS public_projection_tombstones (
 );
 `;
 
+/**
+ * Durable public projection delivery state.
+ *
+ * 0008 was intentionally a shape-only outbox. Rebuild it here instead of
+ * adding nullable columns one by one so every installation has the same state
+ * machine and uniqueness guarantees. Non-empty legacy stores are rejected by
+ * the migration preflight because their payload hashes require application-
+ * level canonicalization before they can enter this contract.
+ */
+const PUBLIC_PROJECTION_OUTBOX_DURABILITY_MIGRATION_SQL = `
+ALTER TABLE public_projection_outbox RENAME TO public_projection_outbox_legacy;
+
+CREATE TABLE public_projection_outbox (
+  id TEXT PRIMARY KEY,
+  deterministic_key TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  projection_type TEXT NOT NULL CHECK (projection_type = 'language_club_agenda_entry.v1'),
+  trigger_agenda_entry_id TEXT NOT NULL,
+  projection_revision INTEGER NOT NULL CHECK (projection_revision >= 0),
+  content_hash TEXT NOT NULL CHECK (length(content_hash) BETWEEN 1 AND 256),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'retryable', 'needs_reconciliation', 'succeeded', 'dead_letter')),
+  payload_json TEXT NOT NULL,
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  fencing_token INTEGER NOT NULL DEFAULT 0 CHECK (fencing_token >= 0),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_attempt_at TEXT,
+  runtime_lease_name TEXT,
+  runtime_owner_id TEXT,
+  runtime_fencing_token INTEGER NOT NULL DEFAULT 0 CHECK (runtime_fencing_token >= 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  published_at TEXT,
+  last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 500),
+  FOREIGN KEY (trigger_agenda_entry_id) REFERENCES private_agenda_entries(id),
+  UNIQUE (projection_type, projection_revision)
+);
+
+DROP TABLE public_projection_outbox_legacy;
+
+CREATE INDEX idx_public_projection_outbox_due
+  ON public_projection_outbox(state, next_attempt_at, created_at);
+CREATE INDEX idx_public_projection_outbox_lease
+  ON public_projection_outbox(state, lease_expires_at);
+`;
+
 const migrations: Migration[] = [
   {
     id: "0001_foundation",
@@ -720,6 +767,11 @@ const migrations: Migration[] = [
   {
     id: "0008_discord_observations_and_projection",
     sql: DISCORD_OBSERVATION_AND_PROJECTION_MIGRATION_SQL
+  },
+  {
+    id: "0009_public_projection_outbox_durability",
+    sql: PUBLIC_PROJECTION_OUTBOX_DURABILITY_MIGRATION_SQL,
+    before: assertLegacyProjectionOutboxEmpty
   }
 ];
 
@@ -748,6 +800,7 @@ export function runMigrations(db: SqliteDatabase): string[] {
     db.exec("BEGIN");
 
     try {
+      migration.before?.(db);
       db.exec(migration.sql);
       db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)").run(migration.id, new Date().toISOString());
       db.exec("COMMIT");
@@ -760,4 +813,20 @@ export function runMigrations(db: SqliteDatabase): string[] {
   }
 
   return newlyApplied;
+}
+
+/**
+ * SQLite has no built-in SHA-256 function. Existing legacy rows therefore
+ * cannot be upgraded to the new content-addressed contract without an
+ * application-level canonicalization pass. Refuse that upgrade atomically;
+ * leaving the legacy table untouched is safer than inventing hashes or
+ * silently coalescing distinct payloads.
+ */
+function assertLegacyProjectionOutboxEmpty(db: SqliteDatabase): void {
+  const row = db.prepare("SELECT COUNT(*) AS count FROM public_projection_outbox").get() as { count?: number } | undefined;
+  if (Number(row?.count ?? 0) > 0) {
+    throw new Error(
+      "Migration 0009 refuses non-empty legacy public_projection_outbox; export and canonicalize payloads before upgrading."
+    );
+  }
 }
