@@ -256,7 +256,18 @@ export function upsertPrivateAgendaEntry(db: SqliteDatabase, input: PrivateAgend
          THEN 'approved'
          ELSE 'pending'
        END,
-       updated_at = excluded.updated_at`
+       updated_at = CASE
+         WHEN private_agenda_entries.agenda_state = 'approved'
+          AND private_agenda_entries.title = excluded.title
+          AND private_agenda_entries.summary = excluded.summary
+          AND private_agenda_entries.program_key = excluded.program_key
+          AND COALESCE(private_agenda_entries.series_key, '') = COALESCE(excluded.series_key, '')
+          AND private_agenda_entries.scheduled_start_at = excluded.scheduled_start_at
+          AND COALESCE(private_agenda_entries.scheduled_end_at, '') = COALESCE(excluded.scheduled_end_at, '')
+          AND private_agenda_entries.timezone = excluded.timezone
+         THEN private_agenda_entries.updated_at
+         ELSE excluded.updated_at
+       END`
   ).run(
     input.id,
     input.sourceProviderEventId,

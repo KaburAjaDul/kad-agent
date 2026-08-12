@@ -24,18 +24,22 @@
 - Milestone: M0/M1A Kaddy end-to-end foundation
 - Scope of this checkpoint: M0 architecture/domain contracts plus M1A bot
   runtime, dependency, CI, and container safety.
-- M0/M1A local code, documentation, audit, dry-run, and independent review
-  gates are green. This does not make the 24x7 homelab checkpoint live. A fresh
-  container rebuild is delegated to PR CI because the local Docker Hub
-  metadata request timed out; do not merge until that job is green.
-- Private authority: SQLite event-operation foundation; durable lease/effect
-  changes are under implementation and are not deployed.
-- External effect: existing Discord Scheduled Event and announcement binding;
-  reconciliation/compensation remains a later reliability slice.
-- Public read model: the staging D1 signed-ingest boundary exists; production
-  cutover and SQLite-owned projection do not.
-- Presentation: the staging website reads the approved D1 agenda API; program
-  detail and production routes are not yet end-to-end live.
+- M0/M1A local code, documentation, audit, dry-run, release, and independent
+  review gates are green. The digest-pinned distroless Node 24 image is non-root
+  and its strict HIGH/CRITICAL vulnerability gate is green. This still does not
+  make the 24x7 homelab checkpoint live.
+- Private authority: SQLite now contains fenced Runtime Leases, Effect Intents,
+  Event Observations, publication approvals, projection revisions, and a
+  durable projection outbox. These controls are locally verified but are not
+  yet deployed on the homelab.
+- External effect: Discord Scheduled Event creation, announcement, reminder,
+  and reconciliation paths use durable fenced intent state. Ambiguous outcomes
+  require reconciliation instead of blind retry.
+- Public read model: staging D1 and the website consume the signed projection.
+  The legacy GitHub-hosted projector remains the only enabled writer until the
+  explicit homelab handoff is completed.
+- Presentation: staging routes read real agenda data and expose safe event and
+  Study Club detail views. Production promotion remains outside this cutover.
 - First public allowlist: Language Club Agenda Entry only.
 - Forbidden public fields: internal notes, assignments, member/private
   identity data, approval rationale, raw payloads, secrets, and unredacted
@@ -48,11 +52,13 @@
 - R2: explicitly out of the first slice.
 - Implemented M1A controls: explicit Discord guild allowlist, safe mention
   policy, interaction error boundary, redacted bounded provider errors,
-  loopback liveness/readiness endpoints, graceful shutdown, pinned Node major,
-  dependency audit, CI, and a Node-major-pinned non-root runtime container.
-- Blockers for production projection cutover: actual role-owner assignments,
-  SQLite outbox/projector ownership, a cron-to-homelab writer handoff, and
-  production website bindings.
-- Residual risk: Discord create/announce compensation, reconciliation,
-  shutdown hard-timeout, SQLite backup/restore, homelab supervision, and
-  production browser behavior are not completed by this checkpoint.
+  private liveness/readiness/metrics endpoints, graceful shutdown, dependency
+  audit, CI, and a digest-pinned non-root distroless runtime container.
+- Blockers for homelab projection cutover: actual backup/privacy/correction
+  owner assignments; materialized file-backed secrets; encrypted off-host
+  backup plus restore evidence; reviewed shadow approvals; proof that no
+  legacy cron run is queued or in progress; and one signed live canary whose
+  revision is strictly newer than the Worker checkpoint.
+- Residual live risk: homelab supervision, Discord permissions, alert delivery,
+  reboot recovery, backup/restore, and rollback remain unproven until the
+  guarded deployment and soak receipts are captured.

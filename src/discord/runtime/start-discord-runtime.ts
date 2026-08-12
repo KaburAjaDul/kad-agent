@@ -34,6 +34,10 @@ import {
   upsertLanguageClubCommand
 } from "../../events/service/language-club-registry-service.js";
 import type { LanguageClubEffectExecutionContext } from "../../events/service/language-club-effect-reconciliation.js";
+import {
+  handlePublicationOperatorCommand,
+  type PublicationOperatorDependencies
+} from "../../publication/publication-operator-adapter.js";
 
 export type DiscordRuntime = {
   publishReminder: (input: { channelId: string; content: string }) => Promise<{ messageId: string }>;
@@ -51,6 +55,7 @@ export type StartDiscordRuntimeOptions = {
   metrics?: OperationalMetrics;
   onReadinessChange?: (ready: boolean) => void;
   startupTimeoutMs?: number;
+  publicationOperator?: PublicationOperatorDependencies;
 };
 
 export async function startDiscordRuntime(
@@ -152,6 +157,18 @@ export async function startDiscordRuntime(
 
       if (interaction.commandName === "status") {
         await replyEphemeral(interaction, gatewayReady && leaseValid ? "Kaddy runtime is ready." : "Kaddy runtime is not ready.");
+        options.metrics?.recordInteraction("success");
+        return;
+      }
+
+      if (interaction.commandName === "publication") {
+        await handlePublicationOperatorCommand(interaction, db, {
+          ...options.publicationOperator,
+          allowedGuildIds: options.publicationOperator?.allowedGuildIds ?? appConfig.discord.allowedGuildIds,
+          getRuntimeLeaseContext:
+            options.publicationOperator?.getRuntimeLeaseContext ??
+            (() => leaseValid ? buildLanguageClubEffectExecutionContext(lease, appConfig) : null)
+        });
         options.metrics?.recordInteraction("success");
         return;
       }

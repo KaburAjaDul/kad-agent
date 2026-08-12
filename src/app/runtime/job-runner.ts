@@ -8,10 +8,54 @@ import {
   type ReminderDeliverySweepResult
 } from "../../events/service/reminder-delivery-service.js";
 import type { OperationalMetrics } from "./operational-metrics.js";
+import type { PublicationMode, PublicationOutcome, PublicationReconciliationOutcome } from "./operational-metrics.js";
 
 export type ReminderSweepResult = {
   discoveredDueReminders: number;
   jobRunId: string;
+};
+
+/**
+ * Narrow seam for the publication worker. The runtime owns scheduling and
+ * safety policy; the publication implementation owns reconciliation and
+ * dispatch details. Keeping the payload opaque prevents logs or metrics from
+ * accidentally acquiring private event content.
+ */
+export type PublicationJobContext = {
+  now: Date;
+  mode: PublicationMode;
+  canDispatch: boolean;
+  requestTimeoutMs?: number;
+  leaseDurationMs?: number;
+  leaseHeartbeatIntervalMs?: number;
+  runtimeLeaseName?: string;
+  runtimeOwnerId?: string;
+  runtimeFencingToken?: number;
+};
+
+export type PublicationObservation = {
+  reconciliationOutcome?: PublicationReconciliationOutcome;
+  revision?: number;
+  outboxStateCounts?: Record<string, number>;
+};
+
+export type PublicationDispatchResult = {
+  outcome?: PublicationOutcome;
+  revision?: number;
+  outboxStateCounts?: Record<string, number>;
+};
+
+export type PublicationJob = {
+  reconcile: (context: PublicationJobContext) => Promise<PublicationObservation | void>;
+  dispatch?: (context: PublicationJobContext, observation: PublicationObservation | void) => Promise<PublicationDispatchResult | void>;
+};
+
+export type PublicationSweepResult = {
+  mode: PublicationMode;
+  observed: boolean;
+  dispatched: boolean;
+  reconciliationOutcome?: PublicationReconciliationOutcome;
+  publicationOutcome?: PublicationOutcome;
 };
 
 export class BackgroundJobRunner {
@@ -27,8 +71,75 @@ export class BackgroundJobRunner {
       runtimeFencingToken?: number;
       leaseDurationMs?: number;
       heartbeatIntervalMs?: number;
+      publicationMode?: PublicationMode;
+      publication?: PublicationJob;
+      publicationRequestTimeoutMs?: number;
+      publicationLeaseDurationMs?: number;
+      publicationLeaseHeartbeatIntervalMs?: number;
     } = {}
   ) {}
+
+  async runPublicationSweep(now: Date = new Date()): Promise<PublicationSweepResult> {
+    const mode = this.options.publicationMode ?? "disabled";
+    this.options.metrics?.setPublicationMode(mode);
+    if (mode === "disabled" || !this.options.publication) {
+      this.options.metrics?.setPublicationObservationStatus("disabled");
+      this.options.metrics?.recordPublicationOutcome("skipped");
+      return { mode, observed: false, dispatched: false, publicationOutcome: "skipped" };
+    }
+
+    const context: PublicationJobContext = {
+      now,
+      mode,
+      canDispatch: mode === "active"
+        && this.options.mode === "operate"
+        && this.options.isLeaseValid?.() !== false,
+      requestTimeoutMs: this.options.publicationRequestTimeoutMs,
+      leaseDurationMs: this.options.publicationLeaseDurationMs,
+      leaseHeartbeatIntervalMs: this.options.publicationLeaseHeartbeatIntervalMs,
+      runtimeLeaseName: this.options.runtimeLeaseName,
+      runtimeOwnerId: this.options.runtimeOwnerId,
+      runtimeFencingToken: this.options.runtimeFencingToken
+    };
+    if (!context.canDispatch && mode === "active") {
+      this.options.metrics?.setPublicationObservationStatus("blocked");
+      this.options.metrics?.recordPublicationOutcome("refused");
+      return { mode, observed: false, dispatched: false, publicationOutcome: "refused" };
+    }
+
+    this.options.metrics?.setPublicationObservationStatus("running");
+    try {
+      const observation = await this.options.publication.reconcile(context);
+      const reconciliationOutcome = observation?.reconciliationOutcome ?? "success";
+      this.options.metrics?.recordPublicationReconciliation(reconciliationOutcome);
+      if (observation?.revision !== undefined) this.options.metrics?.setPublicationRevision(observation.revision);
+      if (observation?.outboxStateCounts) this.options.metrics?.setPublicationOutboxStateCounts(observation.outboxStateCounts);
+      this.options.metrics?.setPublicationObservationStatus("succeeded");
+      this.options.metrics?.refreshFromDatabase(this.db);
+
+      // Observe mode deliberately has no dispatch branch. Even if a worker
+      // accidentally provides a dispatch callback, it is never invoked.
+      if (mode === "observe" || !this.options.publication.dispatch) {
+        const outcome: PublicationOutcome = mode === "observe" ? "skipped" : "refused";
+        this.options.metrics?.recordPublicationOutcome(outcome);
+        return { mode, observed: true, dispatched: false, reconciliationOutcome, publicationOutcome: outcome };
+      }
+
+      const dispatched = await this.options.publication.dispatch(context, observation);
+      const publicationOutcome = dispatched?.outcome ?? "success";
+      this.options.metrics?.recordPublicationOutcome(publicationOutcome);
+      if (dispatched?.revision !== undefined) this.options.metrics?.setPublicationRevision(dispatched.revision);
+      if (dispatched?.outboxStateCounts) this.options.metrics?.setPublicationOutboxStateCounts(dispatched.outboxStateCounts);
+      this.options.metrics?.refreshFromDatabase(this.db);
+      return { mode, observed: true, dispatched: true, reconciliationOutcome, publicationOutcome };
+    } catch {
+      this.options.metrics?.setPublicationObservationStatus("failed");
+      this.options.metrics?.recordPublicationReconciliation("failed");
+      this.options.metrics?.recordPublicationOutcome("failed");
+      this.options.metrics?.refreshFromDatabase(this.db);
+      return { mode, observed: false, dispatched: false, reconciliationOutcome: "failed", publicationOutcome: "failed" };
+    }
+  }
 
   runReminderSweep(now: Date = new Date()): ReminderSweepResult {
     const nowIso = now.toISOString();

@@ -145,6 +145,61 @@ export function createOrGetPublicProjectionOutbox(
 export const insertOrGetPublicProjectionOutbox = createOrGetPublicProjectionOutbox;
 export const createPublicProjectionOutbox = createOrGetPublicProjectionOutbox;
 
+export type SupersedePublicProjectionOutboxInput = RuntimeLeaseContext & {
+  projectionRevision: number;
+  projectionType?: string;
+  now?: Date | string;
+};
+
+/**
+ * Retire only not-yet-delivered snapshots superseded by a newer revision.
+ * Leased, ambiguous, and succeeded rows are intentionally left untouched: an
+ * operator must reconcile those outcomes rather than silently rewriting them.
+ */
+export function supersedeOlderPublicProjectionOutbox(
+  db: SqliteDatabase,
+  input: SupersedePublicProjectionOutboxInput
+): number {
+  const projectionType = input.projectionType ?? DEFAULT_PROJECTION_TYPE;
+  if (!Number.isSafeInteger(input.projectionRevision) || input.projectionRevision < 0) {
+    throw new Error("Public projection supersession revision is invalid.");
+  }
+  const now = asIso(input.now);
+  const active = db.prepare(
+    `SELECT 1 AS active FROM runtime_leases
+      WHERE lease_key = ? AND owner_id = ? AND fencing_token = ? AND expires_at > ?`
+  ).get(input.runtimeLeaseName, input.runtimeOwnerId, input.runtimeFencingToken, now) as { active?: number } | undefined;
+  if (Number(active?.active ?? 0) !== 1) {
+    throw new Error("Public projection supersession requires an active runtime lease.");
+  }
+  const result = db.prepare(
+    `UPDATE public_projection_outbox
+        SET state = 'dead_letter', lease_owner = NULL, lease_expires_at = NULL,
+            next_attempt_at = NULL,
+            last_error = ?, updated_at = ?
+      WHERE projection_type = ?
+        AND projection_revision < ?
+        AND state IN ('pending', 'retryable')
+        AND EXISTS (
+          SELECT 1 FROM runtime_leases AS runtime
+           WHERE runtime.lease_key = ? AND runtime.owner_id = ?
+             AND runtime.fencing_token = ? AND runtime.expires_at > ?
+        )`
+  ).run(
+    `Superseded by public projection revision ${input.projectionRevision}.`,
+    now,
+    projectionType,
+    input.projectionRevision,
+    input.runtimeLeaseName,
+    input.runtimeOwnerId,
+    input.runtimeFencingToken,
+    now
+  ) as { changes?: number };
+  return Number(result.changes ?? 0);
+}
+
+export const supersedePendingPublicProjectionOutbox = supersedeOlderPublicProjectionOutbox;
+
 export function getPublicProjectionOutbox(db: SqliteDatabase, idOrKey: string): PublicProjectionOutbox | null {
   const row = db.prepare(
     "SELECT * FROM public_projection_outbox WHERE id = ? OR deterministic_key = ? OR idempotency_key = ? LIMIT 1"

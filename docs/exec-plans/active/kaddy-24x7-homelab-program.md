@@ -13,6 +13,15 @@ writer handoff. It cannot use the homelab SQLite lease; instead, its writes are
 bounded by the existing signed revision/replay contract. It is disabled before
 the homelab projector publishes its first later revision.
 
+Publication modes are deliberately separate:
+
+- `disabled` performs no observation, approval, enqueue, or dispatch work;
+- `observe` reads Discord through the REST snapshot boundary, writes private
+  SQLite observations, synchronizes the current Worker revision, and permits
+  local operator approvals/outbox inspection, but never sends a projection;
+- `active` requires the operate runtime, explicit cutover confirmation,
+  file-backed signing material, and the completed single-writer handoff below.
+
 ## Checkpoints and PR order
 
 ### Checkpoint 1 — contract and privacy gate (PR 1)
@@ -75,6 +84,35 @@ Acceptance:
 Stop gate: keep cron transitional and public writes frozen on any duplicate
 lease, failed restore, unresolved reconciliation, missing owner, failed
 deletion, or unreviewed portal intent change. Do not fall back to a VPS.
+
+## Single-writer handoff protocol
+
+The repository-variable guard prevents new legacy jobs but cannot cancel a job
+that was already admitted. The operator must perform this exact handoff and
+record each receipt:
+
+1. Run Kaddy on the homelab in `observe`; verify one Runtime Lease, exact guild
+   identity, a trusted Discord snapshot, the current public Worker revision,
+   and zero outbound projection POSTs.
+2. Review and decide every pending publication item. Inspect the resulting
+   local outbox and public DTO while Kaddy remains unable to dispatch.
+3. Set the repository variable `KADDY_RUNTIME_PUBLICATION_ACTIVE=true` to stop
+   admission of new scheduled/manual legacy projection jobs.
+4. Cancel or wait for every already queued or in-progress legacy sync run, then
+   prove the workflow has zero queued/in-progress runs. Ambiguous state aborts
+   the cutover.
+5. Read and record the Worker checkpoint again. Restart Kaddy with
+   `KADDY_PUBLICATION_MODE=active` and
+   `KADDY_PUBLICATION_CUTOVER_CONFIRMED=true`; its fenced local revision floor
+   must be at least that checkpoint before it allocates the first snapshot.
+6. Require the signed canary to return `202`, then GET the public agenda and
+   prove its revision is strictly newer, its approved entries/tombstones are
+   exact, and no private identifiers or raw provider fields are present.
+
+Rollback stops the active Kaddy dispatcher before setting the repository
+variable back to `false`. It then proves Kaddy is not dispatching and no Kaddy
+projection job is in flight before re-enabling the legacy writer. At no point
+may both writer paths be admitted concurrently.
 
 ## Documentation acceptance gate
 
