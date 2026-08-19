@@ -11,17 +11,26 @@ async function main(): Promise<void> {
     guildName: config.DISCORD_TARGET_GUILD_NAME,
     keyId: config.KAD_PROJECTION_KEY_ID,
     signingPrivateKey: config.KAD_PROJECTION_SIGNING_PRIVATE_KEY,
-    publicIdKey: config.KAD_PUBLIC_ID_KEY
+    publicIdKey: config.KAD_PUBLIC_ID_KEY,
+    unsupportedEventPolicy: config.PUBLICATION_UNKNOWN_EVENT_POLICY
   });
 
   if (!dryRun) await postAgendaPublication(config.KAD_PROJECTION_ENDPOINT, result);
 
   const summary = publicationSummary(result);
+  if (summary.unsupportedEvents > 0) {
+    console.warn(JSON.stringify({
+      status: "warning",
+      code: "unsupported_events_skipped",
+      count: summary.unsupportedEvents
+    }));
+  }
   console.log(JSON.stringify({
     status: dryRun ? "validated" : "published",
     mode: dryRun ? "dry-run" : "publish",
     entries: summary.entries,
     categories: summary.categories,
+    unsupportedEvents: summary.unsupportedEvents,
     ...(dryRun ? {} : { revision: summary.revision })
   }));
 }

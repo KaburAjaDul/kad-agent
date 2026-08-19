@@ -122,6 +122,11 @@ default policy reject an unknown scheduled event and leave the last known good
 snapshot; observe mode may record only a valid active/scheduled unknown as a
 redacted private observation (null normalized title, no agenda/approval/public
 write) and reports only the aggregate count.
+The transitional Staging projector may explicitly set
+`PUBLICATION_UNKNOWN_EVENT_POLICY=skip`: unknown events are omitted from the
+public snapshot and only an aggregate warning is emitted while they are
+reviewed. This exception is staging-only; active/default publication remains
+fail-closed and never publishes an unknown event.
 The signed wire body is recursively key-sorted canonical JSON. The signature
 covers `v1`, epoch-millisecond `issuedAt`, epoch-millisecond `expiresAt`
 (five minutes later), nonce, base64url SHA-256 body digest, and the exact body.
@@ -131,4 +136,6 @@ Discord treated as the delivery surface. A Discord observation may be corrected
 or withdrawn by the Staging environment owner; the target is correction within
 one scheduled sync (15 minutes) and withdrawal within one sync after a verified
 privacy or safety report. Unknown classifications, missing approval, invalid
-dates, non-public events, and signature failures fail closed without publishing.
+dates, non-public events, and signature failures fail closed without publishing
+by default. The explicit Staging skip policy only omits unknown events and
+still never publishes their payload.

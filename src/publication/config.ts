@@ -8,7 +8,10 @@ const publicationEnvSchema = z.object({
   KAD_PROJECTION_KEY_ID: z.string().trim().regex(/^[A-Za-z0-9._-]{1,100}$/),
   KAD_PROJECTION_SIGNING_PRIVATE_KEY: z.string().trim().min(1),
   KAD_PUBLIC_ID_KEY: z.string().trim().min(16),
-  PUBLICATION_APPROVED: z.literal("true")
+  PUBLICATION_APPROVED: z.literal("true"),
+  // Staging may deliberately omit an unclassified event from the public
+  // snapshot while the event is reviewed. The default remains fail-closed.
+  PUBLICATION_UNKNOWN_EVENT_POLICY: z.enum(["reject", "skip"]).default("reject")
 });
 
 export type PublicationConfig = z.infer<typeof publicationEnvSchema>;

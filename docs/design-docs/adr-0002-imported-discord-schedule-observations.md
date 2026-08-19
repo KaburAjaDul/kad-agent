@@ -21,7 +21,10 @@ active/scheduled unknown is stored as a redacted private observation with a
 null normalized title, no agenda or approval row, and any stale private agenda
 or approval for that source is withdrawn. Invalid identity, event boundary,
 schedule, or an unknown completed/canceled event still rejects before the
-transaction in every mode.
+transaction in every mode. The transitional Staging cron may explicitly use
+`PUBLICATION_UNKNOWN_EVENT_POLICY=skip`; it omits unknown active/scheduled
+events from the public snapshot and emits only an aggregate warning while they
+are reviewed.
 
 The website consumes the signed snapshot, not Discord directly. The snapshot is
 a full replacement: `entries` is the complete approved set and `tombstones` is
@@ -59,7 +62,10 @@ The sync runs every 15 minutes and can also be dispatched manually. A verified
 privacy or safety report is corrected or withdrawn by changing the source event
 or disabling publication, then running the manual sync; the service-level target
 is one scheduled sync (15 minutes). Unknown titles and schema violations fail
-closed and leave the last known good website snapshot intact.
+closed by default and leave the last known good website snapshot intact. The
+explicit Staging skip policy is the narrow exception: it keeps the unknown
+event private, publishes only sanitized known entries, and reports the
+aggregate count.
 
 ## Rejected alternatives
 
@@ -68,4 +74,6 @@ closed and leave the last known good website snapshot intact.
 - Publishing raw Discord event payloads: rejected because descriptions and
   facilitator identities are not consented publication fields.
 - Silently skipping unknown events: rejected because omission can conceal an
-  unsafe or misclassified source event.
+  unsafe or misclassified source event. Any Staging omission must be explicit,
+  count-only, and limited to the transitional Staging writer; active/default
+  publication still rejects.

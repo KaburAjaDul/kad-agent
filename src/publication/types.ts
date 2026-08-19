@@ -58,4 +58,5 @@ export type PublicationResult = {
   projection: AgendaProjection;
   signature: ProjectionSignature;
   categories: Record<string, number>;
+  unsupportedEvents: number;
 };

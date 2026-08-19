@@ -46,7 +46,7 @@ jobs:
       - name: Audit dependencies
         run: npm audit --audit-level=high
 
-      - name: Publish approved agenda projection
+      - name: Publish staging agenda projection
         run: npm run sync:staging
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
@@ -57,6 +57,9 @@ jobs:
           KAD_PROJECTION_SIGNING_PRIVATE_KEY: ${{ secrets.KAD_PROJECTION_SIGNING_PRIVATE_KEY }}
           KAD_PUBLIC_ID_KEY: ${{ secrets.KAD_PUBLIC_ID_KEY }}
           PUBLICATION_APPROVED: ${{ vars.PUBLICATION_APPROVED }}
+          # Transitional staging policy: omit unclassified events and emit a
+          # count-only warning. Active/default publication remains reject.
+          PUBLICATION_UNKNOWN_EVENT_POLICY: skip
 
       - name: Verify public staging agenda
         env:
