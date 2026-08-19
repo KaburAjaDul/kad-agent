@@ -79,6 +79,8 @@ describe("release and runtime supply-chain contracts", () => {
   it("keeps the legacy staging writer fenced off after runtime cutover", () => {
     const sync = read(".github/workflows/sync-staging.yml");
     expect(sync).toContain("vars.KADDY_RUNTIME_PUBLICATION_ACTIVE != 'true'");
+    expect(sync).toContain("PUBLICATION_UNKNOWN_EVENT_POLICY: skip");
+    expect(sync).toContain("Publish staging agenda projection");
   });
 
   it("keeps REST publication reconciliation independent of Gateway readiness", () => {

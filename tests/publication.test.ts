@@ -24,6 +24,12 @@ describe("publication configuration", () => {
     expect(() => loadPublicationConfig({ ...baseEnv, PUBLICATION_APPROVED: "TRUE" })).toThrow(/PUBLICATION_APPROVED/);
   });
 
+  it("defaults unknown events to the fail-closed policy", () => {
+    expect(loadPublicationConfig(baseEnv).PUBLICATION_UNKNOWN_EVENT_POLICY).toBe("reject");
+    expect(loadPublicationConfig({ ...baseEnv, PUBLICATION_UNKNOWN_EVENT_POLICY: "skip" }).PUBLICATION_UNKNOWN_EVENT_POLICY).toBe("skip");
+    expect(() => loadPublicationConfig({ ...baseEnv, PUBLICATION_UNKNOWN_EVENT_POLICY: "ignore" })).toThrow(/PUBLICATION_UNKNOWN_EVENT_POLICY/);
+  });
+
   it("requires every publication secret and endpoint setting", () => {
     const incomplete = { ...baseEnv };
     delete incomplete.KAD_PUBLIC_ID_KEY;
@@ -77,6 +83,25 @@ describe("language event publication", () => {
       expect(JSON.stringify(error)).not.toContain("Secret host AMA");
       expect(JSON.stringify(error)).not.toContain("someone");
     }
+  });
+
+  it("can explicitly omit unknown staging events without exposing their payload", async () => {
+    const result = await buildAgendaPublication({
+      token: "token",
+      guildId: baseEnv.DISCORD_TARGET_GUILD_ID!,
+      guildName: "KaburAjaDulu",
+      keyId: "key",
+      signingPrivateKey: privateKeyPem,
+      publicIdKey: baseEnv.KAD_PUBLIC_ID_KEY!,
+      unsupportedEventPolicy: "skip",
+      fetchImpl: discordFetch([event("Secret host AMA with @someone", "222222222222222222"), event("English Practice Session", "333333333333333333")])
+    });
+
+    expect(result.unsupportedEvents).toBe(1);
+    expect(result.projection.entries).toHaveLength(1);
+    const serialized = JSON.stringify(result.projection);
+    expect(serialized).not.toContain("Secret host AMA");
+    expect(serialized).not.toContain("222222222222222222");
   });
 
   it("rejects a zero-duration source event before signing", async () => {

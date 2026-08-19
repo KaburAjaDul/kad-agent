@@ -19,8 +19,10 @@ export async function buildAgendaPublication(options: {
   sleepImpl?: RetryOptions["sleepImpl"];
   timeoutMs?: number;
   maxAttempts?: number;
+  unsupportedEventPolicy?: "reject" | "skip";
 }): Promise<PublicationResult> {
   const observedAt = options.observedAt ?? new Date();
+  const unsupportedEventPolicy = options.unsupportedEventPolicy ?? "reject";
   const events = await fetchLanguageGuildEvents(options.token, options.guildId, options.guildName, {
     fetchImpl: options.fetchImpl,
     sleepImpl: options.sleepImpl,
@@ -46,7 +48,7 @@ export async function buildAgendaPublication(options: {
     categories[classification.category] = (categories[classification.category] ?? 0) + 1;
   }
 
-  if (unsupportedCount > 0) {
+  if (unsupportedCount > 0 && unsupportedEventPolicy === "reject") {
     throw new UnsupportedEventsError(unsupportedCount);
   }
 
@@ -61,7 +63,8 @@ export async function buildAgendaPublication(options: {
   return {
     projection,
     signature: signProjection(projection, options.keyId, options.signingPrivateKey),
-    categories
+    categories,
+    unsupportedEvents: unsupportedCount
   };
 }
 
@@ -131,8 +134,13 @@ export class UnsupportedEventsError extends Error {
   }
 }
 
-export function publicationSummary(result: PublicationResult): { entries: number; categories: Record<string, number>; revision: number } {
-  return { entries: result.projection.entries.length, categories: result.categories, revision: result.projection.revision };
+export function publicationSummary(result: PublicationResult): { entries: number; categories: Record<string, number>; revision: number; unsupportedEvents: number } {
+  return {
+    entries: result.projection.entries.length,
+    categories: result.categories,
+    revision: result.projection.revision,
+    unsupportedEvents: result.unsupportedEvents
+  };
 }
 
 export type { AgendaCategory };
