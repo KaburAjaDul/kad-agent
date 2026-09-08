@@ -30,6 +30,7 @@ describe("release and runtime supply-chain contracts", () => {
     expect(release).toMatch(/workflows:\s*\["CI"\]/);
     expect(release).toMatch(/branches:\s*\[main\]/);
     expect(release).toContain("workflow_run.conclusion == 'success'");
+    expect(release).toContain("workflow_run.event == 'push'");
     expect(release).toContain("workflow_run.name == 'CI'");
     expect(release).toContain("workflow_run.head_branch == 'main'");
     expect(release).toContain("workflow_run.repository.full_name == github.repository");
@@ -79,6 +80,11 @@ describe("release and runtime supply-chain contracts", () => {
   it("keeps the legacy staging writer fenced off after runtime cutover", () => {
     const sync = read(".github/workflows/sync-staging.yml");
     expect(sync).toContain("vars.KADDY_RUNTIME_PUBLICATION_ACTIVE != 'true'");
+    expect(sync).toContain("vars.KAD_INFRA_MIGRATION != 'true'");
+    expect(sync).toContain("vars.KAD_INFRA_MIGRATION == 'true'");
+    const pauseJob = sync.slice(sync.indexOf("  migration-pause:"), sync.indexOf("  sync:"));
+    expect(pauseJob).toContain("$GITHUB_STEP_SUMMARY");
+    expect(pauseJob).not.toMatch(/secrets\.|environment:|checkout@|sync:staging/);
     expect(sync).toContain("PUBLICATION_UNKNOWN_EVENT_POLICY: skip");
     expect(sync).toContain("Publish staging agenda projection");
   });
