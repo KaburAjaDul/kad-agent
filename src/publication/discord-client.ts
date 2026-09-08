@@ -19,6 +19,9 @@ export type RetryOptions = {
 
 const MAX_RETRY_AFTER_MS = 30_000;
 
+// Discord may add provider fields independently of this client. Validate the
+// fields we consume and discard additions; publicEntryFor separately allowlists
+// every field in the signed public projection.
 const guildSchema = z.object({
   id: z.string().regex(/^\d{17,20}$/),
   name: z.string().min(1),
@@ -27,7 +30,7 @@ const guildSchema = z.object({
   owner: z.boolean().optional(),
   permissions: z.string().optional(),
   features: z.array(z.string()).optional()
-}).strict();
+}).strip();
 
 const eventSchema = z.object({
   id: z.string().regex(/^\d{17,20}$/),
@@ -49,7 +52,7 @@ const eventSchema = z.object({
   recurrence_rule: z.unknown().nullable().optional(),
   guild_scheduled_event_exceptions: z.array(z.unknown()).optional(),
   sku_ids: z.array(z.string().regex(/^\d{17,20}$/)).optional()
-}).strict();
+}).strip();
 
 export async function fetchLanguageGuildEvents(token: string, targetGuildId: string, targetGuildName: string, options: RetryOptions = {}): Promise<DiscordScheduledEvent[]> {
   const headers = { Authorization: `Bot ${token}`, Accept: "application/json" };
@@ -77,14 +80,27 @@ export async function fetchLanguageGuildEvents(token: string, targetGuildId: str
 
 async function discordJson<T>(url: string, headers: Record<string, string>, options: RetryOptions): Promise<T> {
   const response = await requestWithRetry(url, headers, options);
-  try {
-    const body: unknown = await response.json();
-    const parsed = url.endsWith("/users/@me/guilds") ? z.array(guildSchema).safeParse(body) : z.array(eventSchema).safeParse(body);
-    if (!parsed.success) throw new Error("schema");
-    return parsed.data as T;
-  } catch {
-    throw new Error("Discord API response schema validation failed.");
+  const isGuildList = url.endsWith("/users/@me/guilds");
+  const resource = isGuildList ? "guild list" : "scheduled events";
+  if (!response.ok) {
+    const reason = response.status === 401 ? "authentication failed"
+      : response.status === 403 ? "permission denied"
+      : response.status === 429 ? "rate limit exceeded after retries"
+      : response.status >= 500 ? "upstream unavailable after retries"
+      : "request rejected";
+    // Never include Discord error bodies, headers, or request URLs in logs.
+    throw new DiscordApiError(response.status, `Discord API ${resource}: ${reason} (HTTP ${response.status}).`);
   }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error(`Discord API ${resource} returned invalid JSON.`);
+  }
+  const parsed = isGuildList ? z.array(guildSchema).safeParse(body) : z.array(eventSchema).safeParse(body);
+  if (!parsed.success) throw new Error(`Discord API ${resource} response schema validation failed.`);
+  return parsed.data as T;
 }
 
 export async function requestWithRetry(url: string, headers: Record<string, string>, options: RetryOptions = {}): Promise<Response> {
@@ -108,15 +124,19 @@ export async function requestWithRetry(url: string, headers: Record<string, stri
       if (!retryable || attempt === maxAttempts) return response;
       const retryAfter = retryAfterMilliseconds(response.headers.get("retry-after"));
       await sleepImpl(retryAfter);
-    } catch (error) {
-      if (attempt === maxAttempts) throw error instanceof Error ? error : new Error("Network request failed.");
+    } catch {
+      if (attempt === maxAttempts) {
+        throw new DiscordApiError(0, controller.signal.aborted
+          ? "Discord API request timed out."
+          : "Discord API network request failed after retries.");
+      }
       await sleepImpl(250 * attempt);
     } finally {
       if (timer) clearTimeout(timer);
     }
   }
 
-  throw new Error("Network request failed.");
+  throw new DiscordApiError(0, "Discord API network request failed.");
 }
 
 function retryAfterMilliseconds(value: string | null): number {

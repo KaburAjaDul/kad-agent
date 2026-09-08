@@ -13,11 +13,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  migration-pause:
+    if: github.ref == 'refs/heads/main' && vars.KAD_INFRA_MIGRATION == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Explain the publication pause
+        run: |
+          printf '%s\n' \
+            'Agenda publication is paused for infrastructure migration.' \
+            'No Discord requests or projection writes were attempted.' \
+            'Resume only after migration checks pass by clearing KAD_INFRA_MIGRATION.' \
+            'KADDY_RUNTIME_PUBLICATION_ACTIVE remains the separate single-writer cutover guard.' \
+            >> "$GITHUB_STEP_SUMMARY"
+
   sync:
     # Keep the legacy projector authoritative until the homelab runtime has
     # passed its signed canary. The root-owned cutover flips this repository
     # variable once; it prevents scheduled and manual dual-writer races.
-    if: github.ref == 'refs/heads/main' && vars.KADDY_RUNTIME_PUBLICATION_ACTIVE != 'true'
+    if: github.ref == 'refs/heads/main' && vars.KAD_INFRA_MIGRATION != 'true' && vars.KADDY_RUNTIME_PUBLICATION_ACTIVE != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: Staging
@@ -38,7 +52,7 @@ jobs:
         run: npm run typecheck
 
       - name: Run publication tests
-        run: npm test -- --run tests/publication.test.ts
+        run: npm test -- --run tests/publication.test.ts tests/discord-client.test.ts
 
       - name: Build production output
         run: npm run build

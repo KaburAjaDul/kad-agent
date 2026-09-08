@@ -51,6 +51,21 @@ npm run start:dry-run
 
 The CI workflow runs those checks and a container build with Node 24 and `npm ci`, using only the `contents: read` permission and no repository secrets.
 
+## Agenda sync during infrastructure migration
+
+Set the repository variable `KAD_INFRA_MIGRATION=true` to pause both scheduled
+and manual staging publication. The workflow reports the pause in its job
+summary without loading publication secrets or contacting Discord. Already
+running jobs must be drained or canceled separately. Cloudflare continues
+serving its last accepted snapshot with its existing freshness status.
+
+Clear the migration variable only after the target environment is verified and
+one writer is selected. `KADDY_RUNTIME_PUBLICATION_ACTIVE` is the separate
+permanent writer-handoff guard; follow the
+[single-writer handoff](docs/exec-plans/active/kaddy-24x7-homelab-program.md#single-writer-handoff-protocol)
+when switching to the restored runtime. A migration pause does not establish
+that the runtime is active.
+
 ## Container usage
 
 The multi-stage image compiles the app from lockfile-resolved dependencies on

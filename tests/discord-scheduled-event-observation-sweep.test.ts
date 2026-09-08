@@ -30,8 +30,8 @@ describe("Discord scheduled-event observation sweep", () => {
       guildName: "KaburAjaDulu",
       context,
       fetchImpl: sequenceFetch([
-        [{ id: GUILD_ID, name: "KaburAjaDulu" }],
-        [event()]
+        [{ id: GUILD_ID, name: "KaburAjaDulu", future_guild_field: "must-not-be-stored" }],
+        [{ ...event(), future_event_field: "must-not-be-stored" }]
       ], urls, order),
       maxAttempts: 1,
       clock: () => {
@@ -51,12 +51,14 @@ describe("Discord scheduled-event observation sweep", () => {
       updated_at: "2026-08-12T10:00:00.000Z"
     });
     expect(db.prepare("SELECT COUNT(*) AS count FROM discord_scheduled_event_observations_current").get()).toMatchObject({ count: 1 });
+    expect(JSON.stringify(db.prepare("SELECT * FROM discord_scheduled_event_observations_current").all())).not.toContain("must-not-be-stored");
+    expect(JSON.stringify(db.prepare("SELECT * FROM private_agenda_entries").all())).not.toContain("must-not-be-stored");
   });
 
   it.each([
     ["REST failure", [[{ id: GUILD_ID, name: "KaburAjaDulu" }], { status: 503, body: { error: "unavailable" } }]],
     ["guild identity mismatch", [[{ id: GUILD_ID, name: "Other Guild" }], []]],
-    ["event schema failure", [[{ id: GUILD_ID, name: "KaburAjaDulu" }], [{ ...event(), unsupported: true }]]],
+    ["event schema failure", [[{ id: GUILD_ID, name: "KaburAjaDulu" }], [{ ...event(), scheduled_start_time: "invalid-date" }]]],
     ["event guild identity mismatch", [[{ id: GUILD_ID, name: "KaburAjaDulu" }], [{ ...event(), guild_id: EVENT_ID }]]],
     ["duplicate event identity", [[{ id: GUILD_ID, name: "KaburAjaDulu" }], [event(), event()]]],
     ["unknown event classification", [[{ id: GUILD_ID, name: "KaburAjaDulu" }], [{ ...event(), name: "Japanese for beginner N5 — near miss" }]]]

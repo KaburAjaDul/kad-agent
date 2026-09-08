@@ -143,6 +143,9 @@ describe("language event publication", () => {
     expect(serialized).not.toContain("Soubi");
     expect(serialized).not.toContain("discord.com/events");
     expect(serialized).not.toContain("@");
+    expect(Object.keys(result.projection.entries[0]!).sort()).toEqual([
+      "endAt", "id", "joinUrl", "program", "series", "source", "startAt", "status", "summary", "timezone", "title"
+    ]);
     expect(result.projection.tombstones).toEqual([]);
   });
 });
@@ -185,7 +188,7 @@ describe("projection cryptography", () => {
     expect(sleeps[0]).toBe(30000);
 
     await expect(fetchLanguageGuildEvents("token", baseEnv.DISCORD_TARGET_GUILD_ID!, "KaburAjaDulu", {
-      fetchImpl: async () => new Response(JSON.stringify([{ id: baseEnv.DISCORD_TARGET_GUILD_ID, name: "KaburAjaDulu", unexpected: true }]), { status: 200 })
+      fetchImpl: async () => new Response(JSON.stringify([{ id: "invalid-guild-id", name: "KaburAjaDulu" }]), { status: 200 })
     })).rejects.toThrow("schema validation");
   });
 
